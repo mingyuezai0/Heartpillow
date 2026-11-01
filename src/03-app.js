@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.3';
+  var VERSION = '1.0.4';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -2714,6 +2714,16 @@ var diary    = defaultDiary();
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
     {
+      v: '1.0.4',
+      items: [
+        ['修', '重复回答与错乱：主人连发时的上下文不再重复塞同一条（之前同一句话进了两遍，她就当没说过，来回重讲）'],
+        ['修', '等待回复时点「测试连接」不会再让她重发一遍（只让那一次不流式，不再改全局设置）'],
+        ['修', '和主人的 QQ 聊天不再记进「最近的消息」（统一只在「对话」里看），补收历史也不会再建出主人的会话'],
+        ['新', 'B 站没登录也能读到简介和热门评论区（有字幕就读字幕），挑视频不再只看标题'],
+        ['新', '服务端新增 /bili/video：一次拿全简介 + 评论 + 字幕']
+      ]
+    },
+    {
       v: '1.0.3',
       items: [
         ['更新', 'B 站不用桌面版了：服务器上的常驻客户端代发请求，页面内扫码登录']
@@ -4240,13 +4250,12 @@ var diary    = defaultDiary();
     out.className = 'test-out';
     out.textContent = '正在试…';
     var t0 = Date.now();
-    var keepStream = settings.stream;
-    settings.stream = false;
     try {
+      /* 只让这一次不流式：改全局 settings.stream 会把正在进行的回复带歪，甚至重发一遍 */
       var reply = await chatCompletion([
         { role: 'system', content: '你是一个测试用的助手，只回答一个字。' },
         { role: 'user', content: '回复「在」这一个字。' }
-      ]);
+      ], { stream: false, chars: 20, timeout: 30 });
       var ms = Date.now() - t0;
       out.className = 'test-out is-ok';
       out.textContent = '通了（' + ms + ' ms）。她说：' + String(reply || '').trim().slice(0, 40);
@@ -4254,8 +4263,6 @@ var diary    = defaultDiary();
     } catch (e) {
       out.className = 'test-out is-bad';
       out.textContent = describeError(e);
-    } finally {
-      settings.stream = keepStream;
     }
   }
 
@@ -4974,6 +4981,29 @@ var diary    = defaultDiary();
   }
 
   async function biliView(bvid) {
+    var b = linkBridge();
+    /* 服务端有聚合接口就一次拿全：简介 + 评论区 + 字幕（没登录也有评论和简介） */
+    if (b && b.server) {
+      try {
+        var r = await fetch('/bili/video', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bvid: bvid })
+        });
+        var v = await r.json();
+        if (v && v.ok) {
+          return {
+            aid: Number(v.aid) || 0, cid: Number(v.cid) || 0, mid: Number(v.mid) || 0,
+            title: v.title || '', up: v.up || '',
+            desc: String(v.desc || '').slice(0, 700),
+            pubdate: Number(v.pubdate) || 0, dur: Number(v.dur) || 0,
+            play: Number(v.play) || 0, danmaku: Number(v.danmaku) || 0,
+            tname: v.tname || '', pic: v.pic || '',
+            comments: (v.comments || []).slice(0, 10),
+            subtitle: String(v.subtitle || '')
+          };
+        }
+      } catch (e) { }
+    }
     var j = await biliGet('https://api.bilibili.com/x/web-interface/view?bvid=' + encodeURIComponent(bvid));
     if (!j || j.code !== 0) return null;
     var d = j.data || {};
@@ -4983,13 +5013,15 @@ var diary    = defaultDiary();
       mid: Number(d.owner && d.owner.mid) || 0,
       title: d.title || '',
       up: (d.owner && d.owner.name) || '',
-      desc: String(d.desc || '').slice(0, 300),
+      desc: String(d.desc || '').slice(0, 700),
       pubdate: Number(d.pubdate) || 0,
       dur: Number(d.duration) || 0,
       play: Number(d.stat && d.stat.view) || 0,
       danmaku: Number(d.stat && d.stat.danmaku) || 0,
       tname: d.tname || '',
-      pic: d.pic || ''
+      pic: d.pic || '',
+      comments: [],
+      subtitle: ''
     };
   }
 
@@ -5027,7 +5059,8 @@ var diary    = defaultDiary();
       '- 只从候选里选，不许编造 bvid。',
       '- 优先「看完有收获」的：讲清楚一件事、有观点、有手艺、有情绪但不到处喊。',
       '- 不挑标题党、切片搬运、纯情绪对线、明显广告。',
-      '- 字幕读不到也可以挑，但要在 reason 里如实说明你是按标题/简介判断的。',
+      '- 你会看到标题、简介、热门评论（有时还有字幕）：评论区经常比标题更能说明值不值得看，别只盯标题。',
+      '- 字幕读不到也可以挑，但要在 reason 里如实说明你是按标题/简介/评论判断的。',
       '- 同一个人（UP）最多挑一条。',
       '',
       '怎么说：',
@@ -5051,7 +5084,8 @@ var diary    = defaultDiary();
         dur: linkDurText(c.dur),
         play: c.play,
         desc: c.desc,
-        subtitle: c.subtitle || ''
+        subtitle: c.subtitle || '',
+        comments: (c.comments || []).slice(0, 6).map(function (x) { return String(x.text || x).slice(0, 70); })
       };
     });
     return '候选（' + rows.length + ' 条）：\n' + JSON.stringify(rows, null, 1);
@@ -5162,12 +5196,11 @@ var diary    = defaultDiary();
           tname: v.tname,
           aid: v.aid,
           cid: v.cid,
-          subtitle: ''
+          comments: v.comments || [],
+          subtitle: v.subtitle || ''
         };
-        if (linkWho.login && v.cid) {
-          item.subtitle = await biliSubtitle(c.bvid, v.cid);
-          if (item.subtitle) subs++;
-        }
+        if (!item.subtitle && v.cid) item.subtitle = await biliSubtitle(c.bvid, v.cid);
+        if (item.subtitle) subs++;
         out.push(item);
       } catch (e) {
         linkLog('读取失败：' + c.bvid, 'bad');
@@ -8209,12 +8242,8 @@ var diary    = defaultDiary();
     if (opts.agg) {
       /* 这几条已经各自记过上下文了，这里只负责回一条 */
     } else if (isMasterChat) {
-      /* 和主人的私聊：既进「对话」，也进「最近的消息」，两边都能看到 */
+      /* 和主人的私聊只进「对话」，「最近的消息」里不重复记一份 */
       qqMirrorToChat(ev, text, imgs);
-      qqTouchSession({
-        type: 'private', uid: senderId, group: 0, name: name,
-        face: qqFace(senderId), text: text, mine: false, ts: Number(ev.time) || 0
-      });
     } else {
       qqTouchSession({
         type: isGroup ? 'group' : 'private',
@@ -8277,9 +8306,20 @@ var diary    = defaultDiary();
     }
     /* 连发攒起来回的时候，这几条没有单独进上下文（主人的没镜像、别人的已逐条记过），补一行 */
     if (opts.agg) {
-      var _aggLine = '对方：' + String(opts.agg).slice(0, 600);
-      if (!msgs.length || isMaster) msgs = msgs.concat([_aggLine]);
+      var _aggTxt = String(opts.agg).trim();
+      var _aggLine = '对方：' + _aggTxt.slice(0, 600);
+      var _lastThem = '';
+      for (var _mi = msgs.length - 1; _mi >= 0; _mi--) {
+        if (msgs[_mi].indexOf('对方：') === 0) { _lastThem = msgs[_mi]; break; }
+      }
+      /* 主人这几条已经镜像进「对话」了，上下文里已经有 —— 再补一遍她就当没看见过，来回重复 */
+      var _covered = _lastThem && (_lastThem.indexOf(_aggTxt.slice(0, 24)) >= 0 ||
+        _aggTxt.indexOf(_lastThem.slice(3, 27)) >= 0);
+      if (!msgs.length) msgs = [_aggLine];
+      else if (!_covered) msgs = msgs.concat([_aggLine]);
     }
+    /* 连着两句一模一样（镜像 + 补行都可能造成）只留一条，不然她会答两遍 */
+    msgs = msgs.filter(function (m, i2) { return i2 === 0 || m !== msgs[i2 - 1]; });
     if (!msgs.length) return qqSkip(key, '没有可用的上下文');
 
     actPush('在回 QQ 上「' + name + '」', 'qq');
@@ -8470,15 +8510,18 @@ var diary    = defaultDiary();
       : { user_id: Number(target.uid) || 0, message: String(text) };
     await qqApi(isGroup ? 'send_group_msg' : 'send_private_msg', params);
     var _to = isGroup ? null : personByUid(Number(target.uid), 'qq');
-    /* 不管对方是谁都记进「最近的消息」，主人也一样（同时也进「对话」） */
-    qqTouchSession({
-      type: isGroup ? 'group' : 'private',
-      uid: Number(target.uid) || 0,
-      group: Number(target.group) || 0,
-      name: '',
-      text: String(text),
-      mine: true
-    });
+    /* 她说的话记进「最近的消息」；和主人的私聊不记（那边统一看「对话」） */
+    var _masterUid = Number((roster.qq.master && roster.qq.master.uid) || 0);
+    if (isGroup || Number(target.uid) !== _masterUid && !(_to && _to.isMaster)) {
+      qqTouchSession({
+        type: isGroup ? 'group' : 'private',
+        uid: Number(target.uid) || 0,
+        group: Number(target.group) || 0,
+        name: '',
+        text: String(text),
+        mine: true
+      });
+    }
   }
 
   /* ---------------------------------------------------------------- 界面 */

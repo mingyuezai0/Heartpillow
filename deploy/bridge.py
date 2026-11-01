@@ -742,6 +742,66 @@ def bili_request(url, method="GET", form=None, timeout=25):
     return r
 
 
+def bili_video(bvid):
+    """一次把「简介 + 评论区 + 字幕」都带上：没登录也不至于只看标题"""
+    out = {"ok": True, "bvid": bvid}
+    j = bili_request("https://api.bilibili.com/x/web-interface/view?bvid=" + urllib.parse.quote(bvid))
+    v = (j.get("json") or {})
+    if v.get("code") != 0:
+        return {"ok": False, "why": "B 站没给这个视频：%s" % (v.get("message") or v.get("code"))}
+    d = v.get("data") or {}
+    aid = d.get("aid") or 0
+    cid = d.get("cid") or 0
+    out.update({
+        "aid": aid, "cid": cid,
+        "title": d.get("title") or "",
+        "up": (d.get("owner") or {}).get("name") or "",
+        "mid": (d.get("owner") or {}).get("mid") or 0,
+        "desc": str(d.get("desc") or "")[:800],
+        "pubdate": d.get("pubdate") or 0,
+        "dur": d.get("duration") or 0,
+        "play": (d.get("stat") or {}).get("view") or 0,
+        "danmaku": (d.get("stat") or {}).get("danmaku") or 0,
+        "tname": d.get("tname") or "",
+        "pic": d.get("pic") or "",
+    })
+
+    # 评论区（热门排序），拿不到就空着，不影响整体
+    comments = []
+    try:
+        rj = bili_request("https://api.bilibili.com/x/v2/reply?type=1&oid=%s&sort=2&ps=12&pn=1" % aid)
+        rdata = (rj.get("json") or {}).get("data") or {}
+        for r in (rdata.get("replies") or [])[:12]:
+            msg = str((r.get("content") or {}).get("message") or "").replace("\n", " ").strip()
+            if not msg:
+                continue
+            comments.append({"text": msg[:90], "like": r.get("like") or 0})
+    except Exception:
+        pass
+    out["comments"] = comments
+
+    # 字幕：没登录时大多数视频给不出，能拿到就带上
+    sub = ""
+    if cid:
+        try:
+            pj = bili_request("https://api.bilibili.com/x/player/v2?bvid=%s&cid=%s" % (urllib.parse.quote(bvid), cid))
+            subs = (((pj.get("json") or {}).get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+            if subs:
+                pick = next((x for x in subs if "zh" in str(x.get("lan") or "")), subs[0])
+                u = str(pick.get("subtitle_url") or "")
+                if u.startswith("//"):
+                    u = "https:" + u
+                if u:
+                    sj = bili_request(u)
+                    rows = (sj.get("json") or {}).get("body") or []
+                    sub = " ".join(str(r.get("content") or "") for r in rows)
+                    sub = " ".join(sub.split())[:1800]
+        except Exception:
+            pass
+    out["subtitle"] = sub
+    return out
+
+
 def _bili_do(url, method="GET", form=None, timeout=25):
     data = None
     if form is not None:
@@ -1064,6 +1124,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(bili_request(str(body.get("url") or "")))
         if path == "/bili/post":
             return self._json(bili_request(str(body.get("url") or ""), "POST", body.get("form") or {}))
+        if path == "/bili/video":
+            return self._json(bili_video(str(body.get("bvid") or (q.get("bvid") or [""])[0])))
         if path == "/bili/status":
             st = bili_status()
             st["ok"] = True
