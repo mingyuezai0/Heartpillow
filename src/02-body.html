@@ -400,6 +400,11 @@
                   <label class="field-label" for="meName">我的名字</label>
                   <input class="input" id="meName" type="text" maxlength="24" placeholder="她怎么称呼你" autocomplete="off">
                 </div>
+                  <div class="field">
+                    <label class="field-label" for="meBirthday">我的生日</label>
+                    <input class="input" id="meBirthday" type="date" autocomplete="off">
+                    <p class="field-note">填了之后她会记着：生日当天主动来祝福，平时也能算「还有几天」，日历上也会标出来。</p>
+                  </div>
                 <div class="field">
                   <label class="field-label" for="meText">我的设定</label>
                   <textarea class="textarea" id="meText" rows="10" placeholder="年龄、职业、性格、作息、和她的关系……写得越具体，她越懂你。"></textarea>
@@ -1264,11 +1269,11 @@
                 <input type="checkbox" id="injKey" checked><span class="switch-track"></span>
               </label>
               <label class="switch">
-                <span class="switch-text"><span class="switch-name">带上轻度记忆</span><span class="switch-desc">按最近的几条挑出来</span></span>
+                <span class="switch-text"><span class="switch-name">带上轻度记忆</span><span class="switch-desc">按最近的几轮对话挑出来</span></span>
                 <input type="checkbox" id="injLight" checked><span class="switch-track"></span>
               </label>
-              <div class="slider" style="margin-top:12px" data-left="3 条" data-right="20 条">
-                <input type="range" id="lightCount" min="0" max="20" step="1" value="6" aria-label="轻度记忆条数">
+              <div class="slider" style="margin-top:12px" data-left="3 轮" data-right="20 轮">
+                <input type="range" id="lightCount" min="0" max="20" step="1" value="6" aria-label="轻度记忆轮次">
               </div>
               <label class="switch">
                 <span class="switch-text"><span class="switch-name">带上关键词</span><span class="switch-desc">你们的暗号与词典</span></span>

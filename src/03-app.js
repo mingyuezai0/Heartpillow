@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.5';
+  var VERSION = '1.0.6';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -198,7 +198,7 @@ function defaultDiary() { return { items: [] }; }
     vitals: defaultVitals, link: defaultLink, roster: defaultRoster, memes: defaultMemes,
     qq: defaultQq, plans: defaultPlans, diary: defaultDiary
   };
-  function defaultMe() { return { avatar: '', name: '', text: '' }; }
+function defaultMe() { return { avatar: '', name: '', text: '', birthday: '' }; }
   function defaultPersona() {
     return {
       name: '', call: '', identity: '', text: '', tags: [], catchphrase: '', greeting: '',
@@ -1045,6 +1045,11 @@ var diary    = defaultDiary();
     _days2.push((_lb ? _lb + ' ' : '') + (_dd.getMonth() + 1) + '月' + _dd.getDate() + '日 周' + _wd[_dd.getDay()]);
   }
   /* 今天刷到的 B 站视频：聊天时她可以自然提一句 */
+  var _bi = birthdayInfo();
+  if (_bi) {
+    L.push('【生日】' + (_bi.isToday ? '今天是「我」的生日 —— 记得说句祝福（别像贺卡）。' :
+      ('「我」的生日是 ' + _bi.mm + ' 月 ' + _bi.dd + ' 日，还有 ' + _bi.days + ' 天。')));
+  }
   var _watched = watchedBrief();
   if (_watched) L.push('【今天刷到的】\n' + _watched);
 
@@ -2559,6 +2564,7 @@ var diary    = defaultDiary();
     var pn = $('#mePreviewName');
     if (pn) pn.textContent = me.name || '我';
     var n = $('#meName'); if (n && n.value !== me.name) n.value = me.name || '';
+    var _mb = $('#meBirthday'); if (_mb && _mb.value !== (me.birthday || '')) _mb.value = me.birthday || '';
     var t = $('#meText'); if (t && t.value !== me.text) t.value = me.text || '';
     renderCharButton();
   }
@@ -2726,6 +2732,12 @@ var diary    = defaultDiary();
 
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
+    {
+      v: '1.0.6',
+      items: [
+        ['更新', '「我」加生日（当天主动祝福、提示词带剩余天数、日历标记）；刷完B站主动告知一整段；告知过的内容不再当第一次看到；轻度记忆单位改轮次']
+      ]
+    },
     {
       v: '1.0.5',
       items: [
@@ -3699,6 +3711,33 @@ var diary    = defaultDiary();
   }
 
   /* 最近一轮刷到的视频（给自己看的，聊天时能提） */
+  /* 刷完立刻主动告知：一整段话，落到「对话」并同步发到 QQ */
+  async function biliAnnounce(run) {
+    var picks = (run && run.picks) || [];
+    if (!picks.length) return 0;
+    var who = String(me.name || '').trim();
+    var head = ['今天刷到几条挺想跟' + (who || '你说') + '的：'];
+    var body = [];
+    picks.slice(0, 3).forEach(function (p) {
+      var why = String(p.why || '').replace(/\s+/g, ' ').trim();
+      body.push('《' + String(p.title || '').slice(0, 40) + '》' +
+        (p.up ? '（' + p.up + '）' : '') + (why ? '——' + why.slice(0, 80) : ''));
+    });
+    var text = head.concat(body).join('\n') + '\n有空看看嘛，看完跟我说说你觉得怎么样。';
+    text = scrubOutgoing(text, null, false);
+    if (!text) return 0;
+    chat.messages.push({ id: uid(), role: 'assistant', text: text, ts: Date.now(), via: 'bili' });
+    saveChat();
+    renderChat(true);
+    var mu = Number((roster.qq.master && roster.qq.master.uid) || 0);
+    if (mu && qqReady() && qq.status === 'ok') {
+      try { await qqSendTo({ uid: mu, group: 0 }, text, false); } catch (e) { }
+    }
+    run.announcedAt = Date.now();
+    actPush('跟她说了今天刷到的', 'bili');
+    return 1;
+  }
+
   function watchedBrief() {
     var reps = (link.reports || []);
     if (!reps.length) return '';
@@ -3708,8 +3747,52 @@ var diary    = defaultDiary();
     return picks.map(function (p) {
       var why = String(p.why || '').replace(/\s+/g, ' ').slice(0, 60);
       return '- 《' + String(p.title || '').slice(0, 40) + '》' + (p.up ? ('（' + p.up + '）') : '') + (why ? ('：' + why) : '');
-    }).join('\n') + '\n（想提就自然提一句，别像汇报；不想提也没关系。）';
+    }).join('\n') + '\n（这些你刷完已经主动跟对方说过了，就在上面的对话里 —— 别再当第一次看到，也别重复介绍一遍；对方回应就接着聊。）';
   }
+
+  /* 你的生日：按「月-日」每年算一次 */
+  function birthdayInfo() {
+    var p3 = String(me.birthday || '').trim().split('-');
+    if (!p3.length) return null;
+    var mm = 0, dd = 0;
+    if (p3.length === 3) { mm = Number(p3[1]); dd = Number(p3[2]); }
+    else if (p3.length === 2) { mm = Number(p3[0]); dd = Number(p3[1]); }
+    if (!mm || !dd) return null;
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var next = new Date(now.getFullYear(), mm - 1, dd);
+    if (next.getTime() < today.getTime()) next = new Date(now.getFullYear() + 1, mm - 1, dd);
+    var days = Math.round((next.getTime() - today.getTime()) / 86400000);
+    return { mm: mm, dd: dd, days: days, isToday: days === 0 };
+  }
+
+  /* 生日当天：主动来一句（一年只一次） */
+  async function birthdayTick() {
+    var bi = birthdayInfo();
+    if (!bi || !bi.isToday) return 0;
+    var key = 'greet' + new Date().getFullYear();
+    if (me[key]) return 0;
+    me[key] = Date.now();
+    saveMe();
+    var who = String(me.name || '').trim();
+    var text = '';
+    try {
+      text = await chatCompletion([
+        { role: 'system', content: buildSystemPrompt() },
+        { role: 'user', content: '今天是' + (who || '对方') + '的生日。用你自己的口吻说一句生日祝福，两三句就好，别像贺卡、别喊口号。' }
+      ], { stream: false, chars: 160, temperature: 0.9, timeout: 60 });
+    } catch (e) { }
+    text = String(parseDirectives(String(text || '')).text || '').trim();
+    if (!text) text = (who || '你') + '，生日快乐呀。今天想怎么过，我都陪着';
+    chat.messages.push({ id: uid(), role: 'assistant', text: text, ts: Date.now(), via: 'birthday' });
+    saveChat();
+    renderChat(true);
+    var mu = Number((roster.qq.master && roster.qq.master.uid) || 0);
+    if (mu && qqReady() && qq.status === 'ok') { try { await qqSendTo({ uid: mu, group: 0 }, text, false); } catch (e) { } }
+    actPush('今天是你的生日，她来祝福了', 'done');
+    return 1;
+  }
+
 
   function nowParts() {
     var d = new Date();
@@ -3787,6 +3870,8 @@ var diary    = defaultDiary();
     for (var d = 1; d <= days; d++) {
       var isToday = (y === now.getFullYear() && mo === now.getMonth() && d === now.getDate());
       var fn2 = festOf(new Date(y, mo, d));
+      var _bi2 = birthdayInfo();
+      if (_bi2 && _bi2.mm === (mo + 1) && _bi2.dd === d) fn2 = (fn2 ? fn2 + ' · ' : '') + '我的生日';
       cells.push('<div class="cal-cell' + (isToday ? ' is-today' : '') + (fn2 ? ' has-fest' : '') + '"' +
         (fn2 ? ' title="' + esc(fn2) + '"' : '') + '>' + d +
         (fn2 ? '<i class="cal-dot"></i>' : '') + '</div>');
@@ -5417,6 +5502,9 @@ var diary    = defaultDiary();
         linkFeedPush('video', '《' + String(pk.title || pk.bvid) + '》· 播放 ' + pk.play + ' · 弹幕 ' + (pk.danmaku || 0), pk.bvid);
       });
       run.markdown = linkBuildReport(run);
+
+      /* 刷完主动跟她/他说一段（不是等聊天时提） */
+      await biliAnnounce(run);
 
       /* 评论：开关开着、登录了才发；频率按「每条 / 隔一条 / 只评第一条」 */
       if (link.autoComment && linkWho.login && picks.length) {
@@ -7490,7 +7578,7 @@ var diary    = defaultDiary();
         groupAt: !!qq.groupAt,
         staleMin: 10
       },
-      watch: (function () { var w = watchedBrief(); return w ? w.replace(/\n（想提就自然提一句，别像汇报；不想提也没关系。）$/, '') : ''; })(),
+      watch: (function () { var w = watchedBrief(); return w ? w.replace(/\n（这些你刷完已经主动跟对方说过了，就在上面的对话里 —— 别再当第一次看到，也别重复介绍一遍；对方回应就接着聊。）$/, '') : ''; })(),
       plans: (plans.items || []).filter(function (x) { return !x.done; }).map(function (x) {
       return { id: x.id, text: x.text, due: x.due || '', dueAt: Number(x.dueAt) || planDueTs(x.due) || 0 };
       }),
@@ -9256,6 +9344,11 @@ async function exportDataChoice() {
     bind('#pExtraSystem', function (e) { settings.extraSystem = e.target.value; saveSettings(); });
 
     /* 「我」那一栏 */
+    bind('#meBirthday', function (e) {
+      me.birthday = String(e.target.value || '').trim();
+      saveMe();
+      renderChat(true);
+    });
     bind('#meName', function (e) {
       me.name = e.target.value;
       saveMe(); renderMe(); renderChat();
@@ -9666,11 +9759,13 @@ async function exportDataChoice() {
     setTimeout(function () { qqBridgeStatus(); qqLoginHealth(); qqLeaseStart(); qqSyncBridge(true); }, 1200);
     setTimeout(function () { memoryCompactLight().catch(function () { }); }, 4000);
     setTimeout(function () { diaryAuto().catch(function () { }); memeAutoLearn().catch(function () { }); }, 12000);
+    setTimeout(function () { birthdayTick().catch(function () { }); }, 15000);
     if (!XZ_SMOKE && !planTickTimer) planTickTimer = setInterval(function () { planDueTick().catch(function () { }); }, 30000);
     /* 家里的事：每 5 分钟看一眼——日记、梗、轻度记忆合并 */
     if (!XZ_SMOKE && !window.__houseKeeping) {
       window.__houseKeeping = setInterval(function () {
         diaryAuto().catch(function () { });
+      birthdayTick().catch(function () { });
         memeAutoLearn().catch(function () { });
         memoryCompactLight().catch(function () { });
       }, 300000);
@@ -9788,6 +9883,9 @@ async function exportDataChoice() {
     createCharacter: createCharacter,
     deleteCharacter: deleteCharacter,
     exportFlow: exportFlow,
+    biliAnnounce: function (run) { return biliAnnounce(run); },
+    birthdayInfo: function () { return birthdayInfo(); },
+    watchedBrief: function () { return watchedBrief(); },
     buildPack: function (s) { return buildPack(s); },
     packToMarkdown: function (p) { return packToMarkdown(p); },
     parsePackText: function (t) { return parsePackText(t); },
