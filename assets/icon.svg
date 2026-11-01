@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" role="img" aria-label="心枕">
+  <title>心枕</title>
+  <defs>
+    <linearGradient id="xinzhen-bg" x1="6" y1="2" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7FCCB8"/>
+      <stop offset="0.55" stop-color="#4AA08C"/>
+      <stop offset="1" stop-color="#35796A"/>
+    </linearGradient>
+  </defs>
+  <!-- 天水碧的圆角底 -->
+  <rect x="2" y="2" width="60" height="60" rx="19" fill="url(#xinzhen-bg)"/>
+  <!-- 凝脂色的枕头 -->
+  <rect x="10" y="29" width="44" height="24" rx="12" fill="#C9E8DE"/>
+  <!-- 枕面的一线水波 -->
+  <path d="M12 40.5c6 0 7.5-4 14-4s8 4 14 4 8-4 14-4"
+        fill="none" stroke="#8FCFC0" stroke-width="2" stroke-linecap="round"/>
+  <!-- 枕上的心 -->
+  <path d="M32 30.9c-5.4-4.1-7.1-6.5-7.1-9.1a3.55 3.55 0 0 1 7.1-1.05 3.55 3.55 0 0 1 7.1 1.05c0 2.6-1.7 5-7.1 9.1Z"
+        fill="#FFFDF8"/>
+</svg>

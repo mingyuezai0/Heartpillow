@@ -1,0 +1,22 @@
+[Unit]
+Description=XinZhen bridge (stand-in for the browser page: keeps receiving, replying, plans, Bilibili proxy)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+# NapCat 的 OneBot 11 地址与 token（按自己的改）
+Environment=XZ_WS=ws://127.0.0.1:3001
+Environment=XZ_HTTP=http://127.0.0.1:3000
+Environment=XZ_TOKEN=REPLACE_WITH_NAPCAT_TOKEN
+Environment=XZ_DATA=/var/lib/xinzhen-bridge
+Environment=XZ_PORT=9100
+# 服务器自己的公网域名/IP，桥会把发往它的请求改成 127.0.0.1（绕开 NAT 回环）
+Environment=XZ_SELF_HOSTS=your.domain.or.ip
+ExecStart=/usr/bin/python3 /opt/xinzhen/bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

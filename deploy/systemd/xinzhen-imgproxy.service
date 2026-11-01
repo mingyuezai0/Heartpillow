@@ -1,0 +1,14 @@
+[Unit]
+Description=XinZhen image proxy (QQ/Bili CDN only)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/xinzhen/imgproxy.py
+Restart=always
+RestartSec=3
+User=www-data
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
