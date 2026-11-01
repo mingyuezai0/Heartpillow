@@ -18,3 +18,7 @@ docs/session-media/
 .dsh-import/
 docs/session-*.md
 
+
+# 发布产物（zip 只放 release，不进仓库）
+xinzhen-server-*.zip
+
