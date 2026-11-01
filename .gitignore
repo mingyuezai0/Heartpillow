@@ -22,3 +22,7 @@ docs/session-*.md
 # 发布产物（zip 只放 release，不进仓库）
 xinzhen-server-*.zip
 
+
+# 测试产物
+tools/.preview/
+
