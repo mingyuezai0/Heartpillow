@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.4';
+  var VERSION = '1.0.5';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -182,6 +182,7 @@ function defaultDiary() { return { items: [] }; }
       proLog: { day: '', count: 0, lastAt: 0 },
       collectStickers: true,
       stickerSeen: {},
+    recalled: {},
       stickerDone: {},
       me: { uid: 0, name: '' },
       sessions: [],
@@ -566,6 +567,7 @@ var diary    = defaultDiary();
       if (!qq.apiBase || /^https?:\/\/(127\.0\.0\.1|localhost)/.test(qq.apiBase)) qq.apiBase = '/qq/api';
       if (/^wss?:\/\/(127\.0\.0\.1|localhost)/.test(qq.wsUrl || '')) qq.wsUrl = '';
     }
+    if (!qq.recalled || typeof qq.recalled !== 'object') qq.recalled = {};
     if (!Array.isArray(qq.sessions)) qq.sessions = [];
     if (!qq.me || typeof qq.me !== 'object') qq.me = { uid: 0, name: '' };
 
@@ -1042,8 +1044,19 @@ var diary    = defaultDiary();
     var _lb = _di2 === -1 ? '昨天' : _di2 === 0 ? '今天' : _di2 === 1 ? '明天' : _di2 === 2 ? '后天' : '';
     _days2.push((_lb ? _lb + ' ' : '') + (_dd.getMonth() + 1) + '月' + _dd.getDate() + '日 周' + _wd[_dd.getDay()]);
   }
+  /* 今天刷到的 B 站视频：聊天时她可以自然提一句 */
+  var _watched = watchedBrief();
+  if (_watched) L.push('【今天刷到的】\n' + _watched);
+
   L.push('【现在】' + _now.full + '（' + _now.date + '，北京时间）。' +
     (_last ? ('你们上一次说话是 ' + agoText(_last) + '。') : '') +
+    '\n【节日】' + (function () {
+      var fs2 = upcomingFests(60);
+      if (!fs2.length) return '最近两个月没有节日';
+      return fs2.slice(0, 2).map(function (f2) {
+        return f2.name + (f2.days === 0 ? '就是今天' : ('还有 ' + f2.days + ' 天（' + f2.date + '）'));
+      }).join('；') + '。聊到节日、放假、送礼物这些可以用上，但别硬提。';
+    })() +
     '\n【这一周的日期】' + _days2.join(' / ') +
     '\n提到日期、星期、几点、「明天」「下周三」「三天后」这类说法，都用这一段自己换算；' +
     '不要用你训练数据里的日期，也不要瞎猜。');
@@ -2714,6 +2727,12 @@ var diary    = defaultDiary();
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
     {
+      v: '1.0.5',
+      items: [
+        ['更新', '日历标节日并在提示词里提示临近节日；NapCat 建议密码登录；分条兜底；撤回的消息不回；刷完B站聊天能提及']
+      ]
+    },
+    {
       v: '1.0.4',
       items: [
         ['修', '重复回答与错乱：主人连发时的上下文不再重复塞同一条（之前同一句话进了两遍，她就当没说过，来回重讲）'],
@@ -3640,6 +3659,58 @@ var diary    = defaultDiary();
      她得知道「现在」和「过了多久」，不然久别重逢会算错时间。 */
   var WEEK_CN = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
+  /* ---------------- 中国法定 / 常见节日 ----------------
+     公历固定的直接按 MM-DD；农历的按年列出来（每年日期会变，硬编码近几年的）。 */
+  var CN_FEST_FIXED = {
+    '01-01': '元旦', '02-14': '情人节', '03-08': '妇女节', '03-12': '植树节',
+    '04-01': '愚人节', '05-01': '劳动节', '05-04': '青年节', '06-01': '儿童节',
+    '09-10': '教师节', '10-01': '国庆节', '12-24': '平安夜', '12-25': '圣诞节',
+    '10-31': '万圣夜', '11-11': '双十一', '12-31': '跨年夜'
+  };
+  var CN_FEST_LUNAR = {
+    '2025': { '01-28': '除夕', '01-29': '春节', '02-12': '元宵节', '05-31': '端午节', '08-29': '七夕', '10-06': '中秋节', '10-29': '重阳节' },
+    '2026': { '02-16': '除夕', '02-17': '春节', '03-03': '元宵节', '06-19': '端午节', '08-19': '七夕', '09-25': '中秋节', '10-18': '重阳节' },
+    '2027': { '02-05': '除夕', '02-06': '春节', '02-20': '元宵节', '06-09': '端午节', '08-08': '七夕', '09-15': '中秋节', '10-08': '重阳节' },
+    '2028': { '01-25': '除夕', '01-26': '春节', '02-09': '元宵节', '05-28': '端午节', '07-27': '七夕', '10-03': '中秋节', '10-26': '重阳节' },
+    '2029': { '02-12': '除夕', '02-13': '春节', '02-27': '元宵节', '06-16': '端午节', '08-16': '七夕', '09-22': '中秋节', '10-15': '重阳节' },
+    '2030': { '02-02': '除夕', '02-03': '春节', '02-17': '元宵节', '06-05': '端午节', '08-05': '七夕', '09-12': '中秋节', '10-05': '重阳节' }
+  };
+
+  function festOf(dateObj) {
+    var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+    var mmdd = p2(dateObj.getMonth() + 1) + '-' + p2(dateObj.getDate());
+    var y = String(dateObj.getFullYear());
+    var lunar = CN_FEST_LUNAR[y] || {};
+    if (lunar[mmdd]) return lunar[mmdd];
+    return CN_FEST_FIXED[mmdd] || '';
+  }
+
+  /* 未来 days 天内最近的节日（含今天） */
+  function upcomingFests(days) {
+    var out = [];
+    var base = new Date();
+    base.setHours(0, 0, 0, 0);
+    for (var i = 0; i <= (days || 60); i++) {
+      var d = new Date(base.getTime() + i * 86400000);
+      var n = festOf(d);
+      if (n) out.push({ name: n, days: i, date: (d.getMonth() + 1) + '月' + d.getDate() + '日' });
+    }
+    return out;
+  }
+
+  /* 最近一轮刷到的视频（给自己看的，聊天时能提） */
+  function watchedBrief() {
+    var reps = (link.reports || []);
+    if (!reps.length) return '';
+    var last = reps[reps.length - 1] || {};
+    var picks = (last.picks || []).slice(0, 3);
+    if (!picks.length) return '';
+    return picks.map(function (p) {
+      var why = String(p.why || '').replace(/\s+/g, ' ').slice(0, 60);
+      return '- 《' + String(p.title || '').slice(0, 40) + '》' + (p.up ? ('（' + p.up + '）') : '') + (why ? ('：' + why) : '');
+    }).join('\n') + '\n（想提就自然提一句，别像汇报；不想提也没关系。）';
+  }
+
   function nowParts() {
     var d = new Date();
     var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
@@ -3715,7 +3786,10 @@ var diary    = defaultDiary();
     }
     for (var d = 1; d <= days; d++) {
       var isToday = (y === now.getFullYear() && mo === now.getMonth() && d === now.getDate());
-      cells.push('<div class="cal-cell' + (isToday ? ' is-today' : '') + '">' + d + '</div>');
+      var fn2 = festOf(new Date(y, mo, d));
+      cells.push('<div class="cal-cell' + (isToday ? ' is-today' : '') + (fn2 ? ' has-fest' : '') + '"' +
+        (fn2 ? ' title="' + esc(fn2) + '"' : '') + '>' + d +
+        (fn2 ? '<i class="cal-dot"></i>' : '') + '</div>');
     }
     while (cells.length % 7) cells.push('<div class="cal-cell is-out"></div>');
     var n = nowParts();
@@ -3732,6 +3806,13 @@ var diary    = defaultDiary();
       ['日', '一', '二', '三', '四', '五', '六'].map(function (w) { return '<div class="cal-wd">' + w + '</div>'; }).join('') +
       cells.join('') +
       '</div>' +
+      '<div class="cal-foot">' + (function () {
+        var fs3 = upcomingFests(45);
+        if (!fs3.length) return '';
+        return '接下来：' + fs3.slice(0, 3).map(function (f3) {
+          return f3.name + (f3.days === 0 ? '（今天）' : ('（' + f3.days + ' 天后）'));
+        }).join('、') + '<br>';
+      })() +
       '<div class="cal-foot">现在：' + esc(n.full) + '<br>' +
       (last ? ('上次说话：' + esc(agoText(last)) + '（' + esc(fmtFull(last)) + '）') : '还没说过话') +
       '</div>' +
@@ -7126,6 +7207,14 @@ var diary    = defaultDiary();
       : a.texts.map(function (t, i) { return (i + 1) + ') ' + t; }).join('\n');
     qqOnMessage(a.ev, { force: true, agg: merged }).catch(function () { });
   }
+  /* 撤回时把这一轮还没发出去的攒批取消掉 */
+  function qqAggFlushCancel(key) {
+    var a2 = qqAggBuf[key];
+    if (!a2) return;
+    if (a2.timer) clearTimeout(a2.timer);
+    delete qqAggBuf[key];
+  }
+
   function qqAggPush(key, ev, text) {
     var wait = Number(qq.firstWait) || 0;
     if (wait <= 0) return false;
@@ -7401,6 +7490,7 @@ var diary    = defaultDiary();
         groupAt: !!qq.groupAt,
         staleMin: 10
       },
+      watch: (function () { var w = watchedBrief(); return w ? w.replace(/\n（想提就自然提一句，别像汇报；不想提也没关系。）$/, '') : ''; })(),
       plans: (plans.items || []).filter(function (x) { return !x.done; }).map(function (x) {
       return { id: x.id, text: x.text, due: x.due || '', dueAt: Number(x.dueAt) || planDueTs(x.due) || 0 };
       }),
@@ -8216,8 +8306,30 @@ var diary    = defaultDiary();
 
   async function qqOnMessage(ev, opts) {
     opts = opts || {};
+    /* 撤回事件：记下来，这条不再回复、也不进上下文 */
+    if (ev && ev.post_type === 'notice') {
+      var _nt = String(ev.notice_type || '');
+      if (_nt === 'friend_recall' || _nt === 'group_recall') {
+        var _rid = String(ev.message_id || '');
+        if (_rid) {
+          if (!qq.recalled) qq.recalled = {};
+          qq.recalled[_rid] = Date.now();
+          var _ks = Object.keys(qq.recalled);
+          if (_ks.length > 200) _ks.slice(0, _ks.length - 200).forEach(function (kk) { delete qq.recalled[kk]; });
+          Object.keys(qqAggBuf).forEach(function (bk) {
+            var aa = qqAggBuf[bk];
+            if (aa && aa.ev && String(aa.ev.message_id) === _rid) qqAggFlushCancel(bk);
+          });
+          saveQq();
+        }
+      }
+      return;
+    }
+    opts = opts || {};
     /* 同一条消息只处理一次：重连后 NapCat 可能重推，常驻客户端补收也可能撞上 */
     if (!opts.force && ev && ev.message_id && qqSeenHas(ev.message_id)) return;
+    /* 撤回过的当没看到（不回复、也不进上下文） */
+    if (ev && ev.message_id && qq.recalled && qq.recalled[String(ev.message_id)]) { qqMarkSeen(ev.message_id); return; }
     var isGroup = ev.message_type === 'group';
     var senderId = Number(ev.user_id) || 0;
     if (!senderId || senderId === Number(ev.self_id)) return;
@@ -8378,6 +8490,8 @@ var diary    = defaultDiary();
       var maxParts = isGroup ? Math.min(2, qqPickParts()) : qqPickParts();
       var white = !!(person && (person.list === 'white' || person.isMaster));
       if (qq.splitWhiteOnly && !white) maxParts = 1;
+      /* 话多的时候别一条发完：至少两条 */
+      if (maxParts < 2 && String(reply || '').length >= 30) maxParts = 2;
 
       var parts = [];
       qqSplit(reply, maxParts).forEach(function (t) {
@@ -8470,6 +8584,20 @@ var diary    = defaultDiary();
       groups = [];
       for (var gi = 0; gi < sents.length; gi += per) {
         groups.push(sents.slice(gi, gi + per).join('').trim());
+      }
+
+      /* 兜底：超过 30 字却只切出 1 条 → 在标点附近硬拆两条 */
+      if (groups.length === 1 && cap > 1 && groups[0].length > 30) {
+        var one = groups[0];
+        var mid2 = Math.floor(one.length / 2);
+        var best = -1;
+        for (var bi = 0; bi < one.length; bi++) {
+          if ('，,、；;！？!?'.indexOf(one.charAt(bi)) < 0) continue;
+          if (best < 0 || Math.abs(bi - mid2) < Math.abs(best - mid2)) best = bi;
+        }
+        if (best > 4 && best < one.length - 5) {
+          groups = [one.slice(0, best + 1).trim(), one.slice(best + 1).trim()];
+        }
       }
     }
 

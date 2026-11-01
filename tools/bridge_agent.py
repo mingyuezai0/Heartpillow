@@ -38,6 +38,7 @@ DATA_DIR = os.environ.get("XZ_DATA", "/var/lib/xinzhen-bridge")
 INBOX = os.path.join(DATA_DIR, "inbox.jsonl")
 OUTBOX = os.path.join(DATA_DIR, "outbox.jsonl")
 OPS = os.path.join(DATA_DIR, "ops.jsonl")
+RECALLED = os.path.join(DATA_DIR, "recalled.json")
 STATE = os.path.join(DATA_DIR, "state.json")
 CONFIG = os.path.join(DATA_DIR, "config.json")
 PORT = int(os.environ.get("XZ_PORT", "9100"))
@@ -340,6 +341,9 @@ def build_prompt(cfg, uid, peer_name, is_group):
         t2 = time.localtime(time.time() + off * 86400)
         label = {-1: "昨天 ", 0: "今天 ", 1: "明天 ", 2: "后天 "}.get(off, "")
         days.append(label + time.strftime("%m-%d", t2) + " " + wd_cn[t2.tm_wday])
+    watch = str(cfg.get("watch") or "").strip()
+    if watch:
+        sysmsg += "\n【今天刷到的】\n" + watch[:600] + "\n（想提就自然提一句，别像汇报。）"
     sysmsg += (("\n【计划】对方让你在某个时间做一件事、或者交代了要办的事，你必须当场定计划："
                 "[[计划:要做的事 @年-月-日 时:分]]（按下面的日期换算成绝对时间）。"
                 "做完了用 [[完成:关键词]] 标掉。计划写在回复末尾，对方看不到。"
@@ -933,7 +937,33 @@ def plan_loop():
             stats["lastError"] = "plan loop: %s" % e
 
 
+def mark_recalled(mid):
+    if not mid:
+        return
+    d = load_json(RECALLED, {}) or {}
+    d[str(mid)] = int(time.time())
+    if len(d) > 500:
+        for k in list(d)[: len(d) - 500]:
+            d.pop(k, None)
+    save_json(RECALLED, d)
+
+
+def is_recalled(mid):
+    if not mid:
+        return False
+    return str(mid) in (load_json(RECALLED, {}) or {})
+
+
 def maybe_reply(ev):
+    # 撤回的消息当没看到
+    if ev.get("post_type") == "notice":
+        nt = str(ev.get("notice_type") or "")
+        if nt in ("friend_recall", "group_recall"):
+            mark_recalled(ev.get("message_id"))
+            print("[bridge] 撤回：%s" % ev.get("message_id"), flush=True)
+        return
+    if is_recalled(ev.get("message_id")):
+        return
     """先过一道「连发攒起来」的闸，再决定什么时候真的回"""
     cfg = cfg_or_empty()
     if not cfg or not cfg.get("enabled", True):
