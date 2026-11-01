@@ -1,0 +1,20 @@
+# 依赖 / 临时
+node_modules/
+__pycache__/
+*.pyc
+.tmp/
+.DS_Store
+Thumbs.db
+
+# 字体子集缓存（构建时会自动重新生成，源字体包保留在 tools/fontwork/package）
+tools/fontwork/subset-*.woff2
+
+# 截图与调试产物
+tools/shots/
+docs/session-media/
+*.log
+
+# �Ự��¼ / �����ڲ�Ŀ¼������⣩
+.dsh-import/
+docs/session-*.md
+
