@@ -39,6 +39,9 @@ INBOX = os.path.join(DATA_DIR, "inbox.jsonl")
 OUTBOX = os.path.join(DATA_DIR, "outbox.jsonl")
 OPS = os.path.join(DATA_DIR, "ops.jsonl")
 RECALLED = os.path.join(DATA_DIR, "recalled.json")
+reply_lock = threading.Lock()
+SEEN = {}
+HANDLED = os.path.join(DATA_DIR, "handled.json")
 STATE = os.path.join(DATA_DIR, "state.json")
 CONFIG = os.path.join(DATA_DIR, "config.json")
 PORT = int(os.environ.get("XZ_PORT", "9100"))
@@ -1098,13 +1101,18 @@ def bili_auto_loop():
 
 
 def call_model_retry(cfg, messages, timeout=120, tries=3):
+    """上游偶尔 busy / 429，重试几次；429 等久一点，别把配额烧光"""
     last = None
     for i in range(tries):
         try:
             return call_model(cfg, messages, timeout)
         except Exception as e:
             last = e
-            time.sleep(3 + i * 4)
+            msg = str(e)
+            if "429" in msg:
+                time.sleep(20 + i * 20)
+            else:
+                time.sleep(3 + i * 4)
     raise last
 
 
@@ -1181,6 +1189,30 @@ def plan_loop():
             stats["lastError"] = "plan loop: %s" % e
 
 
+def mark_handled(mid):
+    if not mid:
+        return
+    d = load_json(HANDLED, {}) or {}
+    d[str(mid)] = int(time.time())
+    if len(d) > 2000:
+        for k in list(d)[: len(d) - 2000]:
+            d.pop(k, None)
+    save_json(HANDLED, d)
+
+
+def is_handled(mid):
+    if not mid:
+        return False
+    return str(mid) in (load_json(HANDLED, {}) or {})
+
+def drop_handled(mid):
+    if not mid:
+        return
+    d = load_json(HANDLED, {}) or {}
+    d.pop(str(mid), None)
+    save_json(HANDLED, d)
+
+
 def mark_recalled(mid):
     if not mid:
         return
@@ -1208,11 +1240,24 @@ def maybe_reply(ev):
         return
     if is_recalled(ev.get("message_id")):
         return
+    # 同一条被重推（重连/NapCat 重发）就丢掉，只记内存 10 分钟
+    mid0 = str(ev.get("message_id") or "")
+    if mid0:
+        now0 = time.time()
+        old0 = SEEN.get(mid0)
+        if old0 and now0 - old0 < 600:
+            return
+        SEEN[mid0] = now0
+        if len(SEEN) > 500:
+            for k0 in [k for k, v0 in SEEN.items() if now0 - v0 > 600]:
+                SEEN.pop(k0, None)
     """先过一道「连发攒起来」的闸，再决定什么时候真的回"""
     cfg = cfg_or_empty()
     if not cfg or not cfg.get("enabled", True):
+        print("[bridge] 跳过：没配置或关掉了", flush=True)
         return
     if time.time() < lease_until:
+        print("[bridge] 跳过：页面在线（租约还剩 %ds）" % int(lease_until - time.time()), flush=True)
         return
     uid = int(ev.get("user_id") or 0)
     if not uid or uid == int(ev.get("self_id") or 0):
@@ -1258,6 +1303,12 @@ def reply_now(ev, texts):
         return
     if time.time() < lease_until:
         return
+    # 页面已经回过这条（ack），或者本进程刚回过 → 别再答一次
+    mid1 = ev.get("message_id")
+    with reply_lock:
+        if is_handled(mid1):
+            return
+        mark_handled(mid1)
     uid = int(ev.get("user_id") or 0)
     is_group = ev.get("message_type") == "group"
     if not uid or uid == int(ev.get("self_id") or 0):
@@ -1291,6 +1342,7 @@ def reply_now(ev, texts):
         ])
     except Exception as e:
         stats["lastError"] = "model: %s" % e
+        drop_handled(ev.get("message_id"))   # 没答成，撤回占位好让重试能补上
         return
     ops_found = extract_ops(out)
     if ops_found:
@@ -1307,7 +1359,7 @@ def reply_now(ev, texts):
             napcat_post("send_group_msg" if is_group else "send_private_msg", dict(target, message=p))
             append_line(OUTBOX, {
                 "ts": int(time.time()), "uid": uid,
-                "group": int(ev.get("group_id") or 0) if is_group else 0, "text": p,
+                "group": int(ev.get("group_id") or 0) if is_group else 0, "text": p, "replyTo": ev.get("message_id"),
             })
             stats["replied"] += 1
             stats["lastReplyAt"] = int(time.time())
@@ -1540,11 +1592,20 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "why": str(e)}, 502)
         if u.path.startswith("/ack"):
-            st = load_json(STATE, {})
-            st["since"] = int(body.get("since") or q.get("since", ["0"])[0] or 0)
-            st["ackAt"] = int(time.time())
-            save_json(STATE, st)
-            return self._json({"ok": True, "since": st["since"]})
+            ids = body.get("ids") or []
+            for mid in ids:
+                mark_handled(mid)
+            since = int(body.get("since") or q.get("since", ["0"])[0] or 0)
+            if since:
+                st = load_json(STATE, {})
+                st["since"] = since
+                st["ackAt"] = int(time.time())
+                save_json(STATE, st)
+            return self._json({"ok": True, "n": len(ids), "since": since})
+        if u.path.startswith("/emit"):
+            ev = body.get("ev") or {}
+            threading.Thread(target=maybe_reply, args=(ev,), daemon=True).start()
+            return self._json({"ok": True, "leaseLeft": max(0, int(lease_until - time.time()))})
         if u.path.startswith("/selftest"):
             cfg = cfg_or_empty()
             uid = int(body.get("uid") or cfg.get("masterUid") or 0)
