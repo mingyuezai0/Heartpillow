@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.7';
+  var VERSION = '1.0.9';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -2761,6 +2761,18 @@ var diary    = defaultDiary();
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
     {
+      v: '1.0.9',
+      items: [
+        ['更新', '同一条消息页面和常驻客户端各回一次导致重复回复：两边互相记账；测试连接不再打断回复']
+      ]
+    },
+    {
+      v: '1.0.8',
+      items: [
+        ['更新', '测试连接不再打断正在进行的回复；租约收短让常驻客户端更快接手；后台模型调用遇 429 更温和']
+      ]
+    },
+    {
       v: '1.0.7',
       items: [
         ['更新', '主动找TA可服务端触发并对主人生效；服务端自己刷B站并主动告知；计划分截止/长期/周期；日记不含指令；表情包用表情码收藏；时段与间隔提醒；QQ与B站上下文打通']
@@ -4548,6 +4560,8 @@ var diary    = defaultDiary();
   }
 
   async function testConnection() {
+    /* 她正在回话的时候别测：会打断这一轮，看起来就像她莫名其妙又说一句 */
+    if (abortCtl) { toast('等她说完这句再测', 'warm'); return; }
     var out = $('#testOut');
     if (!out) return;
     if (!settings.baseUrl || !settings.model) {
@@ -7620,6 +7634,7 @@ var diary    = defaultDiary();
           maxTs = Math.max(maxTs, Number(it.ts) || 0);
           var ou = Number(o.uid) || 0;
           var op = ou ? personByUid(ou, 'qq') : null;
+          if (o.replyTo) qqMarkSeen(o.replyTo);
           if (op && op.isMaster) chatMirrorOut(o.text);
           else if (ou) qqTouchSession({ type: 'private', uid: ou, group: 0, name: (op && personNick(op)) || ('QQ ' + ou), face: qqFace(ou), text: String(o.text || ''), mine: true, ts: Number(o.ts) || 0 });
           handled++;
@@ -7770,7 +7785,7 @@ var diary    = defaultDiary();
       await fetch(base + 'lease', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ on: !!on, ttl: 60 })
+        body: JSON.stringify({ on: !!on, ttl: 45 })
       });
     } catch (e) { }
   }
@@ -8782,6 +8797,14 @@ var diary    = defaultDiary();
         if (isMaster) chatMirrorOut(parts[pi]).catch(function () { });
       }
       qqCooldown[key] = Date.now();
+      /* 让常驻客户端也知道这条答过了，避免两边各回一次 */
+      try {
+        var _bb = qqBridgeBase();
+        if (_bb && ev && ev.message_id) {
+          fetch(_bb + 'ack', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: [String(ev.message_id)] }) });
+        }
+      } catch (e) { }
       var _s = qqFindSession(key);
       if (_s) { _s.skip = ''; _s.skipAt = 0; }
       if (person && person.list === 'white') {
