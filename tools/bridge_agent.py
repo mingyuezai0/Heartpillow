@@ -242,6 +242,34 @@ def memory_block(cfg):
 WEEK_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
 
+def time_of_day(hh=None):
+    h = time.localtime().tm_hour if hh is None else int(hh)
+    if h < 5: return "凌晨"
+    if h < 7: return "清晨"
+    if h < 9: return "早上"
+    if h < 11: return "上午"
+    if h < 13: return "中午"
+    if h < 17: return "下午"
+    if h < 19: return "傍晚"
+    if h < 23: return "晚上"
+    return "深夜"
+
+
+def parse_cycle(text):
+    t = str(text or "")
+    freq = "weekly" if re.search(r"每(周|星期|礼拜)", t) else "daily"
+    hh, mi = 20, 0
+    m = re.search(r"(\d{1,2})\s*[:：]\s*(\d{2})", t)
+    if m:
+        hh, mi = int(m.group(1)), int(m.group(2))
+    wd = -1
+    if freq == "weekly":
+        mw = re.search(r"[周星期礼拜]\s*([一二三四五六日天])", t)
+        mp = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 0, "天": 0}
+        wd = mp.get(mw.group(1), time.localtime().tm_wday + 1) if mw else (time.localtime().tm_wday + 1) % 7
+    return {"freq": freq, "hh": hh, "mi": mi, "wd": wd}
+
+
 def now_text():
     t = time.time()
     lt = time.localtime(t)
@@ -357,6 +385,8 @@ def build_prompt(cfg, uid, peer_name, is_group):
 
 PLAN_RE = re.compile(r"\[\[\s*计划\s*[:：]\s*([^\]\n]{1,200}?)\s*\]\]")
 DONE_RE = re.compile(r"\[\[\s*完成\s*[:：]\s*([^\]\n]{1,60}?)\s*\]\]")
+LONG_RE = re.compile(r"\[\[\s*长期\s*[:：]\s*([^\]\n]{1,200}?)\s*\]\]")
+CYCLE_RE = re.compile(r"\[\[\s*周期\s*[:：]\s*([^\]\n]{1,200}?)\s*\]\]")
 MEME_RE = re.compile(r"\[\[\s*梗\s*[:：]\s*([^\]\n]{1,160}?)\s*\]\]")
 
 
@@ -373,6 +403,18 @@ def extract_ops(text):
             raw = raw[:dm.start()].strip()
         if raw:
             ops.append({"type": "plan", "a": raw[:200], "b": due})
+    for m in LONG_RE.finditer(t):
+        if m.group(1).strip():
+            ops.append({"type": "plan", "kind": "long", "a": m.group(1).strip()[:200], "b": ""})
+    for m in CYCLE_RE.finditer(t):
+        raw = m.group(1).strip()
+        due = ""
+        dm = re.search(r"@\s*([^\]]{1,30})$", raw)
+        if dm:
+            due = dm.group(1).strip()
+            raw = raw[: dm.start()].strip()
+        if raw:
+            ops.append({"type": "plan", "kind": "cycle", "a": raw[:200], "b": due})
     for m in DONE_RE.finditer(t):
         if m.group(1).strip():
             ops.append({"type": "done", "a": m.group(1).strip()[:60]})
@@ -882,6 +924,190 @@ def bili_qr_poll(key):
     return {"ok": True, "login": False, "state": "wait", "why": "等你扫码"}
 
 
+
+PRSTATE = os.path.join(DATA_DIR, "proactive.json")
+BILIAUTO = os.path.join(DATA_DIR, "biliauto.json")
+
+
+def last_any_ts(uid):
+    """这个人最后一次说话（收或发）的时间戳"""
+    last = 0
+    if os.path.exists(INBOX):
+        for line in open(INBOX, "r", encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            ev = r.get("ev") or {}
+            if ev.get("post_type") == "message" and str(ev.get("user_id")) == str(uid):
+                last = max(last, int(ev.get("time") or r.get("ts") or 0))
+    if os.path.exists(OUTBOX):
+        for line in open(OUTBOX, "r", encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if str(r.get("uid")) == str(uid):
+                last = max(last, int(r.get("ts") or 0))
+    return last
+
+
+def proactive_loop():
+    """页面关着也能主动找主人说话"""
+    while True:
+        time.sleep(180)
+        try:
+            cfg = cfg_or_empty()
+            pr = ((cfg.get("qq") or {}).get("proactive") or {})
+            if not pr.get("on"):
+                continue
+            if time.time() < lease_until:
+                continue
+            master = int(cfg.get("masterUid") or 0)
+            if not master:
+                continue
+            tgt = str(pr.get("targets") or "master")
+            if tgt not in ("master", "white", "all"):
+                continue
+            lt = time.localtime()
+            hh = lt.tm_hour
+            qf = int(pr.get("quietFrom") or 1)
+            qt = int(pr.get("quietTo") or 7)
+            quiet = (qf <= hh < qt) if qf < qt else (hh >= qf or hh < qt)
+            if quiet:
+                continue
+            idle_h = float(pr.get("idleHours") or 3)
+            last = last_any_ts(master)
+            if not last or (time.time() - last) < idle_h * 3600:
+                continue
+            st = load_json(PRSTATE, {}) or {}
+            day = time.strftime("%Y-%m-%d")
+            if st.get("day") != day:
+                st = {"day": day, "count": 0, "lastAt": 0}
+            if int(st.get("count") or 0) >= int(pr.get("dailyMax") or 3):
+                continue
+            if st.get("lastAt") and time.time() - float(st["lastAt"]) < float(pr.get("gapMin") or 120) * 60:
+                continue
+            ctx = recent_context(master, 6, False)
+            if not ctx:
+                ctx = ["（还没聊过）"]
+            user = ("最近的对话：\n" + "\n".join(ctx) +
+                    "\n\n现在没人跟你说话，是你在主动开口找对方。说一句自然的话，像真人突然想起来发消息那样，"
+                    "不超过 20 字；不要提「主动」「找你」「在吗」这类空话，也不要解释你为什么发。")
+            if pr.get("hint"):
+                user += "想说的方向：" + str(pr["hint"])[:60]
+            out = call_model_retry(cfg, [{"role": "system", "content": build_prompt(cfg, master, "", False)},
+                                       {"role": "user", "content": user}])
+            text = strip_directives(out).strip().split("\n")[0].strip()
+            if not text:
+                continue
+            napcat_post("send_private_msg", {"user_id": master, "message": text[:200]})
+            append_line(OUTBOX, {"ts": int(time.time()), "uid": master, "group": 0, "text": text[:200]})
+            st["count"] = int(st.get("count") or 0) + 1
+            st["lastAt"] = int(time.time())
+            save_json(PRSTATE, st)
+            stats["replied"] += 1
+            print("[bridge] 主动找主人：%s" % text[:20], flush=True)
+        except Exception as e:
+            stats["lastError"] = "proactive: %s" % e
+
+
+def run_bili_auto(cfg):
+    """服务端自己刷一轮 B 站：搜 → 看详情+评论 → 让她挑 → 主动发一段"""
+    lk = cfg.get("link") or {}
+    kws = [str(x) for x in (lk.get("keywords") or []) if str(x).strip()][:3] or ["科技", "生活"]
+    want = max(1, min(3, int(lk.get("dailyCount") or 2)))
+    master = int(cfg.get("masterUid") or 0)
+    cands = []
+    seen = set()
+    for kw in kws:
+        j = bili_request("https://api.bilibili.com/x/web-interface/search/type?search_type=video&order=pubdate&page=1&keyword="
+                         + urllib.parse.quote(kw))
+        lst = ((j.get("json") or {}).get("data") or {}).get("result") or []
+        for v in lst[:8]:
+            bv = v.get("bvid")
+            if not bv or bv in seen:
+                continue
+            seen.add(bv)
+            cands.append({"bvid": bv, "title": re.sub(r"<[^>]+>", "", str(v.get("title") or "")),
+                          "up": v.get("author") or "", "play": v.get("play") or 0})
+    if not cands:
+        return 0
+    details = []
+    for c in cands[:6]:
+        v = bili_video(c["bvid"])
+        if not v.get("ok"):
+            continue
+        details.append({
+            "bvid": c["bvid"], "title": v.get("title"), "up": v.get("up"),
+            "desc": (v.get("desc") or "")[:200],
+            "comments": [x["text"] for x in (v.get("comments") or [])[:5]],
+        })
+    if not details:
+        return 0
+    prompt = ("你是「%s」。从候选里挑最多 %d 条今天最值得看的，只从候选里选。"
+              "你会看到标题、简介和热门评论，评论区经常比标题更能说明值不值得看。"
+              "输出 JSON：{\"picks\":[{\"bvid\":\"BV...\",\"why\":\"两三句具体理由\"}]}"
+              % ((cfg.get("persona") or {}).get("name") or "心枕", want))
+    out = call_model_retry(cfg, [{"role": "system", "content": prompt},
+                               {"role": "user", "content": json.dumps(details, ensure_ascii=False)}])
+    try:
+        m = re.search(r"\{.*\}", strip_directives(out), re.S)
+        picks = (json.loads(m.group(0)) if m else {}).get("picks") or []
+    except Exception:
+        picks = []
+    byid = {d["bvid"]: d for d in details}
+    lines = []
+    for p in picks[:want]:
+        d = byid.get(str(p.get("bvid")))
+        if not d:
+            continue
+        lines.append("《%s》（%s）——%s" % (str(d["title"])[:36], d["up"], str(p.get("why") or "")[:70]))
+    if not lines:
+        return 0
+    text = "今天刷到几条挺想跟你说的：\n" + "\n".join(lines) + "\n有空看看嘛，看完跟我说说你觉得怎么样。"
+    if master:
+        napcat_post("send_private_msg", {"user_id": master, "message": text[:900]})
+        append_line(OUTBOX, {"ts": int(time.time()), "uid": master, "group": 0, "text": text[:900]})
+    st = load_json(BILIAUTO, {}) or {}
+    st["lastRun"] = int(time.time())
+    st["lastText"] = text[:900]
+    save_json(BILIAUTO, st)
+    print("[bridge] 自动刷完 B 站，已告知", flush=True)
+    return 1
+
+
+def bili_auto_loop():
+    while True:
+        time.sleep(600)
+        try:
+            cfg = cfg_or_empty()
+            lk = cfg.get("link") or {}
+            if str(lk.get("autoMode") or "") != "auto":
+                continue
+            st = load_json(BILIAUTO, {}) or {}
+            every = float(lk.get("autoEvery") or 6) * 3600
+            if st.get("lastRun") and time.time() - float(st["lastRun"]) < every:
+                continue
+            hh = time.localtime().tm_hour
+            if hh < int(lk.get("autoFrom") or 9) or hh > int(lk.get("autoTo") or 23):
+                continue
+            run_bili_auto(cfg)
+        except Exception as e:
+            stats["lastError"] = "bili auto: %s" % e
+
+
+def call_model_retry(cfg, messages, timeout=120, tries=3):
+    last = None
+    for i in range(tries):
+        try:
+            return call_model(cfg, messages, timeout)
+        except Exception as e:
+            last = e
+            time.sleep(3 + i * 4)
+    raise last
+
+
 def plan_loop():
     """每分钟看一遍有没有到点的计划，到点就用她的口吻跟主人说一句"""
     while True:
@@ -899,13 +1125,31 @@ def plan_loop():
             now = time.time()
             for pl in (cfg.get("plans") or []):
                 pid = str(pl.get("id") or "")
-                if not pid or fired.get(pid):
+                kind = str(pl.get("kind") or "once")
+                if not pid or kind == "long":
                     continue
-                ts = float(pl.get("dueAt") or 0) or parse_due(pl.get("due"))
-                if ts > 1e11:      # 页面传的是毫秒，这里统一成秒
-                    ts = ts / 1000.0
-                if not ts or ts > now or now - ts > 6 * 3600:
-                    continue
+                if kind == "cycle":
+                    c = pl.get("cycle") or {}
+                    hh = int(c.get("hh", 20)); mi = int(c.get("mi", 0))
+                    lt = time.localtime(now)
+                    key = "%s:%04d%02d%02d%02d%02d" % (pid, lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mi)
+                    if fired.get(key):
+                        continue
+                    if c.get("freq") == "weekly" and lt.tm_wday != int(c.get("wd", -1)) % 7:
+                        continue
+                    now_min = lt.tm_hour * 60 + lt.tm_min
+                    if not (hh * 60 + mi <= now_min < hh * 60 + mi + 15):
+                        continue
+                    ts = now - 1
+                    pid = key
+                else:
+                    if fired.get(pid):
+                        continue
+                    ts = float(pl.get("dueAt") or 0) or parse_due(pl.get("due"))
+                    if ts > 1e11:
+                        ts = ts / 1000.0
+                    if not ts or ts > now or now - ts > 6 * 3600:
+                        continue
                 text = str(pl.get("text") or "").strip()
                 if not text:
                     continue
@@ -1331,6 +1575,8 @@ if __name__ == "__main__":
     threading.Thread(target=reader_loop, daemon=True).start()
     threading.Thread(target=plan_loop, daemon=True).start()
     threading.Thread(target=health_loop, daemon=True).start()
+    threading.Thread(target=proactive_loop, daemon=True).start()
+    threading.Thread(target=bili_auto_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print("[bridge] HTTP 127.0.0.1:%d  data=%s" % (PORT, DATA_DIR), flush=True)
     srv.serve_forever()
