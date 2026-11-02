@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.9';
+  var VERSION = '1.1.0';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -2760,6 +2760,12 @@ var diary    = defaultDiary();
 
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
+    {
+      v: '1.1.0',
+      items: [
+        ['更新', '主动开口改成接上下文聊旧事/新事，禁止拿「现在几点」「在吗」当话题']
+      ]
+    },
     {
       v: '1.0.9',
       items: [
@@ -8393,20 +8399,43 @@ var diary    = defaultDiary();
     var s = cands[0];
     var p = personByUid(s.uid, 'qq');
     var who = p ? personNick(p) : s.name;
-    var lines = (s.thread || []).slice(-6).map(function (m) {
-      return (m.mine ? '你：' : ((p && p.isMaster ? '对方' : s.name) + '：')) + String(m.text || '');
-    }).join('\n');
+    var lines = (function () {
+      var isM = p && p.isMaster;
+      var src = isM
+        ? (chat.messages || []).filter(function (m) { return (m.role === 'user' || m.role === 'assistant') && m.text; }).slice(-10)
+        : (s.thread || []).slice(-10);
+      return src.map(function (m) {
+        if (isM) return (m.role === 'user' ? '对方：' : '你：') + String(m.text || '').slice(0, 120);
+        return (m.mine ? '你：' : ((p && p.isMaster ? '对方' : s.name) + '：')) + String(m.text || '').slice(0, 120);
+      });
+    })().join('\n');
+
+    /* 话题素材：记住的事、没做完的计划、今天刷到的 */
+    var seeds = [];
+    (memory.key || []).slice(-4).forEach(function (m5) {
+      seeds.push('你记得：' + (m5.title ? m5.title + '：' : '') + String(m5.text || '').slice(0, 60));
+    });
+    (plans.items || []).filter(function (x) { return !x.done; }).slice(0, 3).forEach(function (x) {
+      seeds.push('还没做/没做完：' + String(x.text || '').slice(0, 40));
+    });
+    (link.reports || []).slice(-1).forEach(function (r0) {
+      (r0.picks || []).slice(0, 2).forEach(function (pk) {
+        seeds.push('你刚刷到的：《' + String(pk.title || '').slice(0, 30) + '》');
+      });
+    });
 
     try {
       var out = await chatCompletion([
         { role: 'system', content: qqSystemPrompt(p, s.name) },
         {
           role: 'user',
-          content: '最近的对话：\n' + (lines || '（还没聊过）') +
-            '\n\n现在没人跟你说话，是你在主动开口找对方。' +
-            '说一句自然的话，像真人突然想起来发消息那样，不超过 20 字；' +
-            '不要提「主动」「找你」「在吗」这类空话，也不要解释你为什么发。' +
-            (pr.hint ? ('想说的方向：' + pr.hint) : '')
+        content: '最近的对话：\n' + (lines || '（还没聊过）') +
+          (seeds.length ? ('\n\n你手边能接的话头：\n' + seeds.slice(0, 6).join('\n')) : '') +
+          '\n\n现在没人跟你说话，是你在主动开口找对方。要求：\n' +
+          '- 接着上面聊过的事往下说，或者把「你手边能接的话头」里的一件具体小事说出来；像真人突然想起什么就发一句。\n' +
+          '- 不许问「现在几点」「在干嘛」「在吗」这类空话，也不要问对方在不在；除非上面真的聊到了时间，否则别拿时间当话题。\n' +
+          '- 一句话，不超过 25 字，不用解释你为什么发。' +
+          (pr.hint ? ('\n想说的方向：' + pr.hint) : '')
         }
       ], { stream: false, chars: 60, temperature: 0.95, timeout: 90 });
       var text = stripDirectives(String(out || '')).replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
