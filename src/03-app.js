@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.6';
+  var VERSION = '1.0.7';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -1037,6 +1037,7 @@ var diary    = defaultDiary();
 
   var _now = nowParts();
   var _last = typeof lastTalkTs === 'function' ? lastTalkTs() : 0;
+  var _lastGapHours = _last ? ((Date.now() - _last) / 3600000) : 0;
   var _wd = ['日', '一', '二', '三', '四', '五', '六'];
   var _days2 = [];
   for (var _di2 = -1; _di2 <= 6; _di2++) {
@@ -1053,8 +1054,9 @@ var diary    = defaultDiary();
   var _watched = watchedBrief();
   if (_watched) L.push('【今天刷到的】\n' + _watched);
 
-  L.push('【现在】' + _now.full + '（' + _now.date + '，北京时间）。' +
-    (_last ? ('你们上一次说话是 ' + agoText(_last) + '。') : '') +
+  L.push('【现在】' + _now.full + '，也就是' + _now.tod + '（' + _now.date + '，北京时间）。' +
+    (_last ? ('距离上一次说话：' + agoText(_last) + '。' +
+      (_lastGapHours >= 6 ? '隔了这么久，别把上次的话当刚说完接着聊；先看清现在是什么时段（' + _now.tod + '），该问候就问候。' : '')) : '') +
     '\n【节日】' + (function () {
       var fs2 = upcomingFests(60);
       if (!fs2.length) return '最近两个月没有节日';
@@ -1165,7 +1167,10 @@ var diary    = defaultDiary();
     '- 对方让你在某个时间做一件事（“八点提醒我”“明天早上叫我”）；\n' +
     '- 对方交代了要办的事，哪怕没给时间（自己估一个合理时间）；\n' +
     '- 你自己说了“等下就去做”“待会儿弄完告诉你”。\n' +
-    '格式：[[计划:要做的事 @年-月-日 时:分]]\n' +
+    '计划分三种，自己判断用哪种：\n' +
+    '  ① 有截止时间的一件事 → [[计划:要做的事 @年-月-日 时:分]]\n' +
+    '  ② 没有终点、要一直做下去的事（比如每天给她道晚安的习惯、长期目标）→ [[长期:要做的事]]\n' +
+    '  ③ 固定周期重复（每天/每周某个时间）→ [[周期:要做的事 @每天20:00]] 或 [[周期:要做的事 @每周日21:00]]\n' +
     '示例：[[计划:晚上八点提醒他喝水 @2026-11-01 20:00]]\n' +
     '· 时间必须按【现在】和【这一周的日期】换算成绝对时间再写，不要写“明天晚上”这种。\n' +
     '· 没提时间但确实要做的，默认放今晚 20:00（已经过 20:00 就放明天 20:00）。\n' +
@@ -1554,6 +1559,28 @@ var diary    = defaultDiary();
     }
     text = text.replace(planRe, '');
 
+    /* 长期：[[长期:每天给她留一句晚安]] —— 不设截止，要主动叫停才结束 */
+    var longRe = /\[\[\s*长期\s*[:：]\s*([^\]\n]{1,200}?)\s*\]\]/g;
+    var lm2;
+    while ((lm2 = longRe.exec(text)) !== null) {
+      var lt2 = String(lm2[1] || '').trim();
+      if (lt2) ops.push({ type: 'plan', kind: 'long', a: lt2, b: '' });
+    }
+    text = text.replace(longRe, '');
+
+    /* 周期：[[周期:叫她起床 @每天7:30]] / [[周期:周报 @每周日21:00]] */
+    var cycleRe = /\[\[\s*周期\s*[:：]\s*([^\]\n]{1,200}?)\s*\]\]/g;
+    var cm2;
+    while ((cm2 = cycleRe.exec(text)) !== null) {
+      var raw2 = String(cm2[1] || '').trim();
+      var due2 = '';
+      var dm3 = raw2.match(/@\s*([^\]\n]{1,30})\s*$/);
+      if (dm3) { due2 = dm3[1].trim(); raw2 = raw2.slice(0, dm3.index).trim(); }
+      if (raw2) ops.push({ type: 'plan', kind: 'cycle', a: raw2, b: due2 });
+    }
+    text = text.replace(cycleRe, '');
+
+
     /* 梗：[[梗:电子榨菜|下饭但没营养的内容|吃饭时问“配的什么榨菜”]] */
     var memeRe = /\[\[\s*梗\s*[:：]\s*([^\]\n]{1,160}?)\s*\]\]/g;
     var mm2;
@@ -1737,7 +1764,7 @@ var diary    = defaultDiary();
       }
 
     } else if (op.type === 'plan') {
-      var pit = planItemAdd(op.a, op.b, 'ai');
+      var pit = planItemAdd(op.a, op.b, 'ai', op.kind || 'once');
       if (pit) added.push({ kind: 'plan', label: pit.text });
     } else if (op.type === 'done') {
       var dn2 = planItemDone(op.a);
@@ -2377,6 +2404,7 @@ var diary    = defaultDiary();
     memTurns++;
     if (memTurns >= 2) { memTurns = 0; memoryAutoExtract().catch(function () { }); }
     memeAutoLearn().catch(function () { });
+    qqProTick().catch(function () { });
   }
 
   /* attsOnly：只发附件，输入框里已经打好的字留着，不当附件一起发出去 */
@@ -2732,6 +2760,12 @@ var diary    = defaultDiary();
 
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
+    {
+      v: '1.0.7',
+      items: [
+        ['更新', '主动找TA可服务端触发并对主人生效；服务端自己刷B站并主动告知；计划分截止/长期/周期；日记不含指令；表情包用表情码收藏；时段与间隔提醒；QQ与B站上下文打通']
+      ]
+    },
     {
       v: '1.0.6',
       items: [
@@ -3297,11 +3331,12 @@ var diary    = defaultDiary();
             '- 有具体的事、具体的细节和自己的情绪，可以写乱一点、可以有一句突然的感慨；\n' +
             '- 不要总结陈词、不要分小标题、不要「今天真是充实的一天」这种模板句、不要提 AI 或记录；\n' +
             '- 长短随意，一般 150~400 字。\n' +
-            '只输出日记正文。\n\n' + buildSystemPrompt()
+            '只输出日记正文，不要写任何方括号里的东西。\n\n【人设】' + (persona.text || '') + '\n【称呼】' + (me.name || '') + '\n【说话风格】' + (styleText ? styleText() : '')
         },
         { role: 'user', content: '日期：' + d0 + '\n这天发生的事：\n' + src + '\n\n用她的口吻写今天的日记。' }
       ], { stream: false, chars: 700, temperature: 0.95, timeout: 120 });
-      var text = String(out || '').trim();
+      /* 日记里绝不能出现隐藏指令：整块清掉，再清残留 */
+      var text = String(out || '').replace(/\[\[记忆\]\][\s\S]*?\[\[\/记忆\]\]/g, '').replace(/\[\[[^\]]{0,200}\]\]/g, '').trim();
       if (!text) return 0;
       diary.items = (diary.items || []).filter(function (x) { return x.date !== d0; });
       diary.items.unshift({ id: 'dy' + Date.now().toString(36), date: d0, text: text, ts: Date.now(), by: 'ai' });
@@ -3355,7 +3390,32 @@ var diary    = defaultDiary();
 
   /* -------------------------------------------------------------- 计划 */
   /* -------------------------------------------------------------- 计划 */
-  function planItemAdd(text, due, by) {
+  /* 周期计划：把「每天20:00」「每周三 21:30」解析成结构 */
+  function parseCycle(s) {
+    var t = String(s || '');
+    var freq = /每(周|星期|礼拜)/.test(t) ? 'weekly' : 'daily';
+    var hh = 20, mi = 0;
+    var hm = t.match(/(\d{1,2})\s*[:：]\s*(\d{2})/);
+    if (hm) { hh = Number(hm[1]); mi = Number(hm[2]); }
+    else {
+      var hm2 = t.match(/([一二三四五六七八九十两\d]{1,3})\s*点\s*(半|一刻|(\d{1,2})\s*分?)?/);
+      if (hm2) {
+        hh = cnNum(hm2[1]);
+        if (hm2[2] === '半') mi = 30;
+        else if (hm2[2] === '一刻') mi = 15;
+        else if (hm2[3]) mi = Number(hm2[3]);
+      }
+    }
+    var wd = -1;
+    if (freq === 'weekly') {
+      var wm = t.match(/[周星期礼拜]\s*([一二三四五六日天])/);
+      var map = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
+      wd = wm ? map[wm[1]] : new Date().getDay();
+    }
+    return { freq: freq, hh: hh, mi: mi, wd: wd };
+  }
+
+  function planItemAdd(text, due, by, kind, cycle) {
     var t = String(text || '').trim();
     if (!t) return null;
     if (!Array.isArray(plans.items)) plans.items = [];
@@ -3363,19 +3423,50 @@ var diary    = defaultDiary();
       return !x.done && String(x.text).trim() === t;
     })[0];
     if (dup) return dup;
-    var dueTxt = String(due || '').slice(0, 40);
+    var kd = kind || 'once';
     var item = {
       id: 'pl' + Math.random().toString(36).slice(2, 8),
       text: t.slice(0, 200),
-      due: dueTxt,
-      dueAt: planDueTs(dueTxt) || 0,
-      done: false, doneAt: 0, ts: Date.now(), by: by || 'ai'
+      kind: kd,
+      due: String(due || '').slice(0, 40),
+      dueAt: kd === 'once' ? (planDueTs(String(due || '')) || 0) : 0,
+      cycle: kd === 'cycle' ? (cycle || parseCycle(due)) : null,
+      done: false, stopped: false, doneAt: 0, ts: Date.now(), by: by || 'ai'
     };
     plans.items.push(item);
     savePlans();
     renderPlans();
-    if (item.dueAt) actPush('定了计划：' + item.text.slice(0, 16) + '（' + fmtSmart(item.dueAt) + '）', 'done');
+    var label = kd === 'long' ? '长期的事' : (kd === 'cycle' ? ('周期：' + planKindText(item)) : fmtSmart(item.dueAt));
+    actPush('定了计划：' + item.text.slice(0, 16) + '（' + label + '）', 'done');
     return item;
+  }
+
+  /* 周期计划下一次该响的时间 */
+  function planNextCycleTs(it, from) {
+    if (!it || !it.cycle) return 0;
+    var c = it.cycle;
+    var base = new Date(from || Date.now());
+    for (var d = 0; d < 8; d++) {
+      var cand = new Date(base.getFullYear(), base.getMonth(), base.getDate() + d, c.hh, c.mi, 0, 0);
+      if (c.freq === 'weekly' && cand.getDay() !== Number(c.wd)) continue;
+      if (cand.getTime() > (from || Date.now())) return cand.getTime();
+    }
+    return 0;
+  }
+
+  function planKindText(it) {
+    if (!it) return '';
+    if (it.kind === 'long') return '长期';
+    if (it.kind === 'cycle' && it.cycle) {
+      var c = it.cycle;
+      var hm = ('0' + c.hh).slice(-2) + ':' + ('0' + c.mi).slice(-2);
+      if (c.freq === 'weekly') {
+        var wd = ['日', '一', '二', '三', '四', '五', '六'][Number(c.wd) || 0];
+        return '每周' + wd + ' ' + hm;
+      }
+      return '每天 ' + hm;
+    }
+    return '';
   }
 
   function planItemDone(word) {
@@ -3515,37 +3606,58 @@ var diary    = defaultDiary();
   var planTickTimer = null;
   async function planDueTick() {
     var now = Date.now();
-    var due = (plans.items || []).filter(function (x) {
-      if (x.done || x.firedAt) return false;
+    var due = [];
+    (plans.items || []).forEach(function (x) {
+      if (x.done || x.stopped) return;
+      var kd = x.kind || 'once';
+      if (kd === 'long') return;                     /* 长期：不自动响 */
+      if (kd === 'cycle') {
+        var nextTs = planNextCycleTs(x, x.lastFiredAt || (now - 86400000));
+        if (!nextTs) return;
+        /* 到点 10 分钟内、且这一轮还没响过 */
+        var key = planCycleKey(x, nextTs);
+        if (now >= nextTs && now - nextTs < 10 * 60000 && x.lastCycleKey !== key) {
+          x.lastCycleKey = key;
+          x.lastFiredAt = nextTs;
+          due.push(x);
+        }
+        return;
+      }
       var ts = planDueAt(x);
-      if (!ts) return false;
-      return ts <= now && now - ts < 6 * 3600 * 1000;   /* 只补 6 小时内到点的，太旧的不翻 */
+      if (!ts) return;
+      if (ts <= now && now - ts < 6 * 3600 * 1000) due.push(x);
     });
-    if (!due.length) return 0;
+    if (!due.length) { renderPlans(); return 0; }
     var fired = 0;
-    for (var i = 0; i < due.length; i++) {
-      var x = due[i];
-      x.firedAt = now;
+    for (var i2 = 0; i2 < due.length; i2++) {
+      var x2 = due[i2];
+      if ((x2.kind || 'once') === 'once') x2.firedAt = now;
       savePlans();
-      actPush('到点了：' + x.text, 'done');
-      toast('计划到点了：' + x.text);
+      actPush('到点了：' + x2.text, 'done');
+      toast('计划到点了：' + x2.text);
       fired++;
-      /* 让她主动跟主人说一句（有主人的 QQ 才发） */
       var master = (roster.qq.master && roster.qq.master.uid) || 0;
       if (master && qqReady() && qq.status === 'ok') {
         try {
           var out = await chatCompletion([
             { role: 'system', content: buildSystemPrompt() },
-            { role: 'user', content: '你之前计划要做的事：' + x.text + (x.due ? ('（约好 ' + x.due + '）') : '') +
+            { role: 'user', content: '你之前计划要做的事：' + x2.text +
+              (planKindText(x2) ? ('（' + planKindText(x2) + '）') : '') +
               '\n现在到时间了。用你自己的口吻跟我说一句，说明你现在就去做/已经做了。一两句，别解释你在做什么程序上的操作。' }
           ], { stream: false, chars: 100, temperature: 0.8, timeout: 60 });
-          var t = parseDirectives(String(out || '')).text.trim();
-          if (t) await qqSendTo({ uid: master }, t.slice(0, 120), false);
+          var t2 = parseDirectives(String(out || '')).text.trim();
+          if (t2) await qqSendTo({ uid: master }, t2.slice(0, 120), false);
         } catch (e) { }
       }
     }
     renderPlans();
     return fired;
+  }
+
+  function planCycleKey(it, ts) {
+    var d = new Date(ts);
+    return it.id + ':' + d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) +
+      ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2);
   }
 
 
@@ -3572,7 +3684,12 @@ var diary    = defaultDiary();
         (x.due ? ('<span class="plan-due">' + esc(planDueText(x)) + '</span>') : '') +
         '<span>' + (x.done ? ('完成于 ' + fmtFull(x.doneAt)) : ('记于 ' + fmtFull(x.ts))) + '</span>' +
         (x.by === 'me' ? '<span>你交代的</span>' : '') +
+        ((x.kind === 'long') ? '<span class="plan-kind">长期' + (x.stopped ? ' · 已叫停' : '') + '</span>' : '') +
+        ((x.kind === 'cycle') ? '<span class="plan-kind">' + esc(planKindText(x)) + (x.stopped ? ' · 已叫停' : '') + '</span>' : '') +
         '</div></div>' +
+        ((x.kind === 'long' || x.kind === 'cycle') && !x.done
+          ? ('<button class="btn btn-sm btn-ghost" data-plan-stop="' + esc(x.id) + '">' + (x.stopped ? '恢复' : '叫停') + '</button>')
+          : '') +
         '<button class="plan-del" data-plan-del="' + esc(x.id) + '" title="删除">' +
         '<svg class="ic ic-sm" aria-hidden="true"><use href="#i-trash"/></svg></button>' +
         '</div>';
@@ -3585,6 +3702,16 @@ var diary    = defaultDiary();
         if (!it) return;
         it.done = !it.done;
         it.doneAt = it.done ? Date.now() : 0;
+        savePlans();
+        renderPlans();
+      };
+    });
+    $$('[data-plan-stop]', box).forEach(function (b) {
+      b.onclick = function () {
+        var id = b.dataset.planStop;
+        var it = plans.items.filter(function (x) { return x.id === id; })[0];
+        if (!it) return;
+        it.stopped = !it.stopped;
         savePlans();
         renderPlans();
       };
@@ -3794,6 +3921,20 @@ var diary    = defaultDiary();
   }
 
 
+  /* 一天里的时段：凌晨 / 清晨 / 早上 / 上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜 */
+  function timeOfDay(h) {
+    var hh = (h == null) ? new Date().getHours() : Number(h);
+    if (hh < 5) return '凌晨';
+    if (hh < 7) return '清晨';
+    if (hh < 9) return '早上';
+    if (hh < 11) return '上午';
+    if (hh < 13) return '中午';
+    if (hh < 17) return '下午';
+    if (hh < 19) return '傍晚';
+    if (hh < 23) return '晚上';
+    return '深夜';
+  }
+
   function nowParts() {
     var d = new Date();
     var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
@@ -3802,6 +3943,7 @@ var diary    = defaultDiary();
       mo: d.getMonth() + 1,
       day: d.getDate(),
       wd: WEEK_CN[d.getDay()],
+      tod: timeOfDay(d.getHours()),
       hh: p2(d.getHours()),
       mi: p2(d.getMinutes()),
       ss: p2(d.getSeconds()),
@@ -7576,11 +7718,15 @@ var diary    = defaultDiary();
         splitMax: Number(qq.splitMax) || 3,
         splitGap: Number(qq.splitGap) || 0.6,
         groupAt: !!qq.groupAt,
-        staleMin: 10
+        staleMin: 10,
+        proactive: qq.proactive || {}
       },
+      link: { autoMode: link.autoMode, autoEvery: link.autoEvery, autoFrom: link.autoFrom, autoTo: link.autoTo,
+              keywords: (link.keywords || []).slice(0, 6), dailyCount: link.dailyCount },
+      me: { name: me.name || '', birthday: me.birthday || '' },
       watch: (function () { var w = watchedBrief(); return w ? w.replace(/\n（这些你刷完已经主动跟对方说过了，就在上面的对话里 —— 别再当第一次看到，也别重复介绍一遍；对方回应就接着聊。）$/, '') : ''; })(),
       plans: (plans.items || []).filter(function (x) { return !x.done; }).map(function (x) {
-      return { id: x.id, text: x.text, due: x.due || '', dueAt: Number(x.dueAt) || planDueTs(x.due) || 0 };
+      return { id: x.id, text: x.text, kind: x.kind || 'once', cycle: x.cycle || null, stopped: !!x.stopped, due: x.due || '', dueAt: Number(x.dueAt) || planDueTs(x.due) || 0 };
       }),
       model: {
         baseUrl: settings.baseUrl || '',
@@ -7896,7 +8042,8 @@ var diary    = defaultDiary();
       out.push({
         id: String(d.emoji_id || d.emojiId || ''),
         summary: String(d.summary || '').slice(0, 20),
-        url: /^https?:/.test(String(d.url || '')) ? String(d.url) : ''
+        url: /^https?:/.test(String(d.url || '')) ? String(d.url) : '',
+      face: (d.emoji_id || d.emojiId) ? { id: String(d.emoji_id || d.emojiId), summary: String(d.summary || '') } : null
       });
     });
     return out;
@@ -8062,29 +8209,52 @@ var diary    = defaultDiary();
     var k = String(im.key);
     qq.stickerSeen[k] = (Number(qq.stickerSeen[k]) || 0) + 1;
     saveQq();
-    /* 满 3 次才收，且只收一次（QQ 断线重连可能重复收到同一张） */
-    if (qq.stickerSeen[k] < 3 || !im.url) return;
+    /* 有图片地址的收 3 次，纯表情码收 2 次即可 */
+    var need = im.url ? 3 : 2;
+    if (qq.stickerSeen[k] < need) return;
     if (!qq.stickerDone || typeof qq.stickerDone !== 'object') qq.stickerDone = {};
     if (qq.stickerDone[k]) return;
     qq.stickerDone[k] = 1;
-    try {
-      var data = await qqFetchImage(im.url);
-      if (!data) return;
-      if (assets.stickers.some(function (x) { return x.data === data; })) return;
+    if (im.url) {
+      try {
+        var data = await qqFetchImage(im.url);
+        if (data) {
+          if (assets.stickers.some(function (x) { return x.data === data; })) return;
+          assets.stickers.push({
+            id: 'qq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+            name: 'QQ' + (assets.stickers.length + 1),
+            emotion: '开心', data: data
+          });
+          saveAssets();
+          renderStickers();
+          toast('收录了一张表情包');
+          return;
+        }
+      } catch (e) { }
+    }
+    if (im.face && im.face.id) {
+      if (assets.stickers.some(function (x) { return x.face && x.face.id === im.face.id; })) return;
       assets.stickers.push({
-        id: 'qq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
-        name: 'QQ' + (assets.stickers.length + 1),
+        id: 'mf' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+        name: im.summary || ('QQ表情' + (assets.stickers.length + 1)),
         emotion: '开心',
-        data: data
+        face: { id: im.face.id, summary: im.summary || '' }
       });
       saveAssets();
       renderStickers();
-      toast('收录了一张表情包（主人发过 3 次了）');
-    } catch (e) { }
+      toast('收录了一个 QQ 表情');
+    }
   }
 
   /* 把表情包发出去（QQ） */
   async function qqSendSticker(target, sticker, isGroup) {
+    if (sticker && sticker.face && sticker.face.id) {
+      var mseg = [{ type: 'mface', data: { emoji_id: sticker.face.id, summary: sticker.face.summary || '' } }];
+      await qqApi(isGroup ? 'send_group_msg' : 'send_private_msg', isGroup
+        ? { group_id: Number(target.group) || 0, message: mseg }
+        : { user_id: Number(target.uid) || 0, message: mseg });
+      return;
+    }
     var b64 = String((sticker && sticker.data) || '').split(',')[1] || '';
     if (!b64) throw new Error('这张表情读不出来');
     var msg = [{ type: 'image', data: { file: 'base64://' + b64 } }];
@@ -8183,15 +8353,27 @@ var diary    = defaultDiary();
     if (!force && Number(qq.proLog.count) >= pr.dailyMax) return 0;
     if (!force && Number(qq.proLog.lastAt) && now - Number(qq.proLog.lastAt) < pr.gapMin * 60000) return 0;
 
-    var cands = (qq.sessions || []).filter(function (s) {
-      if (!qqProAllowed(s)) return false;
+    var cands = [];
+    var mu2 = Number((roster.qq.master && roster.qq.master.uid) || 0);
+    var allowMaster = pr.targets === 'master' || pr.targets === 'white' || pr.targets === 'all';
+    if (mu2 && allowMaster) {
+      var lastChat = 0;
+      (chat.messages || []).slice(-20).forEach(function (m3) { lastChat = Math.max(lastChat, Number(m3.ts) || 0); });
+      var mp = personByUid(mu2, 'qq');
+      var mc = {
+        type: 'private', uid: mu2, group: 0, name: personNick(mp) || '主人',
+        thread: [], at: lastChat, _lastAt: lastChat
+      };
+      if (force || (lastChat && (now - lastChat) >= pr.idleHours * 3600000)) cands.push(mc);
+    }
+    (qq.sessions || []).forEach(function (s) {
+      if (Number(s.uid) === mu2) return;                 /* 主人走上面那条 */
+      if (!qqProAllowed(s)) return;
       var last = 0;
-      (s.thread || []).slice(-6).forEach(function (m) { last = Math.max(last, Number(m.t) || 0); });
+      (s.thread || []).slice(-6).forEach(function (m4) { last = Math.max(last, Number(m4.t) || 0); });
       s._lastAt = last || Number(s.at) || 0;
-      if (force) return true;
-      return s._lastAt && (now - s._lastAt) >= pr.idleHours * 3600000;
+      if (force || (s._lastAt && (now - s._lastAt) >= pr.idleHours * 3600000)) cands.push(s);
     });
-    if (!cands.length) { renderQq(); return 0; }
     cands.sort(function (a, b) { return (a._lastAt || 0) - (b._lastAt || 0); });
     var s = cands[0];
     var p = personByUid(s.uid, 'qq');
@@ -8482,7 +8664,7 @@ var diary    = defaultDiary();
       imgs.forEach(function (im) { qqNoteSticker(im); });
       /* 表情包（mface）也要能收：之前只收图片，等于把表情包漏了 */
       mfaces.forEach(function (mf) {
-        qqNoteSticker({ key: 'mf' + (mf.id || mf.summary || '') , url: mf.url });
+        qqNoteSticker({ key: 'mf' + (mf.id || mf.summary || ''), url: mf.url, summary: mf.summary, face: mf.face });
       });
     }
 
@@ -9884,6 +10066,9 @@ async function exportDataChoice() {
     deleteCharacter: deleteCharacter,
     exportFlow: exportFlow,
     biliAnnounce: function (run) { return biliAnnounce(run); },
+    timeOfDay: function (h) { return timeOfDay(h); },
+    qqNoteSticker: function (im) { return qqNoteSticker(im); },
+    planKindText: function (it) { return planKindText(it); },
     birthdayInfo: function () { return birthdayInfo(); },
     watchedBrief: function () { return watchedBrief(); },
     buildPack: function (s) { return buildPack(s); },
