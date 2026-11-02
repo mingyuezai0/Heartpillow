@@ -991,14 +991,32 @@ def proactive_loop():
                 continue
             if st.get("lastAt") and time.time() - float(st["lastAt"]) < float(pr.get("gapMin") or 120) * 60:
                 continue
-            ctx = recent_context(master, 6, False)
+            ctx = recent_context(master, 10, False)
             if not ctx:
                 ctx = ["（还没聊过）"]
+            # 手边能接的话头：记忆 / 未完成的计划 / 今天刷到的
+            seeds = []
+            mem = cfg.get("memory") or {}
+            for k2 in (mem.get("key") or [])[-4:]:
+                t2 = (k2.get("title") or "") + ("：" if k2.get("title") else "") + str(k2.get("text") or "")[:60]
+                if t2.strip():
+                    seeds.append("你记得：" + t2)
+            for pl2 in (cfg.get("plans") or []):
+                if not pl2.get("done"):
+                    seeds.append("还没做完：" + str(pl2.get("text") or "")[:40])
+                if len(seeds) >= 6:
+                    break
+            w2 = str(cfg.get("watch") or "").strip()
+            if w2:
+                seeds.append("你刚刷到的：" + w2.split("\n")[0][:60])
             user = ("最近的对话：\n" + "\n".join(ctx) +
-                    "\n\n现在没人跟你说话，是你在主动开口找对方。说一句自然的话，像真人突然想起来发消息那样，"
-                    "不超过 20 字；不要提「主动」「找你」「在吗」这类空话，也不要解释你为什么发。")
+                    (("\n\n你手边能接的话头：\n" + "\n".join(seeds[:6])) if seeds else "") +
+                    "\n\n现在没人跟你说话，是你在主动开口找对方。要求：\n"
+                    "- 接着上面聊过的事往下说，或者把「能接的话头」里的一件具体小事说出来，像真人突然想起什么就发一句；\n"
+                    "- 不许问「现在几点」「在干嘛」「在吗」这类空话，除非上面真聊到时间，否则别拿时间当话题；\n"
+                    "- 一句话，不超过 25 字，不要解释你为什么发。")
             if pr.get("hint"):
-                user += "想说的方向：" + str(pr["hint"])[:60]
+                user += "\n想说的方向：" + str(pr["hint"])[:60]
             out = call_model_retry(cfg, [{"role": "system", "content": build_prompt(cfg, master, "", False)},
                                        {"role": "user", "content": user}])
             text = strip_directives(out).strip().split("\n")[0].strip()
