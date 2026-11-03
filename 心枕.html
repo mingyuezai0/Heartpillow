@@ -4063,7 +4063,7 @@ curl -s localhost:9100/status            # connected / loginOk / 收到多少条
 (function () {
   'use strict';
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
   /* 自动化冒烟测试时带上 ?smoke=1：关掉常驻定时器，避免测试卡在虚拟时间上 */
   var XZ_SMOKE = /[?&]smoke=1/.test(location.search);
 
@@ -6819,6 +6819,12 @@ var diary    = defaultDiary();
 
   /* ------------------------------------------------------------ 关于页 */
   var CHANGELOG = [
+    {
+      v: '1.1.1',
+      items: [
+        ['更新', '收发全部收归服务端（页面只展示和手动发送）；表情包由服务端计数并同步进表情库']
+      ]
+    },
     {
       v: '1.1.0',
       items: [
@@ -11672,6 +11678,7 @@ var diary    = defaultDiary();
   }
 
   var qqBridgeBusy = false;
+  var qqServerOk = false;
   async function qqPullBridge(manual) {
     var base = qqBridgeBase();
     if (!base || qqBridgeBusy) return 0;
@@ -11762,6 +11769,7 @@ var diary    = defaultDiary();
         actPush('补收了不在时收到的 ' + handled + ' 条（服务器上收的）', 'qq');
         if (manual) toast('补收了 ' + handled + ' 条消息');
       }
+      try { qqStickersSync().catch(function () { }); } catch (e) { }
       return handled;
     } catch (e) {
       return 0;
@@ -11855,14 +11863,44 @@ var diary    = defaultDiary();
     } catch (e) { }
   }
 
+/* 服务端收的表情包：拉回来并进表情库 */
+async function qqStickersSync() {
+  var base = qqBridgeBase();
+  if (!base) return 0;
+  try {
+    var r = await fetch(base + 'stickers', { cache: 'no-store' });
+    var d = await r.json();
+    var items = (d && d.items) || [];
+    if (!items.length) return 0;
+    var added = 0;
+    items.forEach(function (it) {
+      if (!it) return;
+      if (it.face && it.face.id) {
+        if (assets.stickers.some(function (x) { return x.face && x.face.id === it.face.id; })) return;
+        assets.stickers.push({ id: 'mf' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+          name: it.face.summary || 'QQ表情', emotion: '开心', face: { id: it.face.id, summary: it.face.summary || '' } });
+        added++;
+      } else if (it.url && !assets.stickers.some(function (x) { return x.srcUrl === it.url; })) {
+        assets.stickers.push({ id: 'srv' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+          name: 'QQ表情', emotion: '开心', srcUrl: it.url });
+        added++;
+      }
+    });
+    if (added) { saveAssets(); renderStickers(); toast('收录了 ' + added + ' 个表情'); }
+    return added;
+  } catch (e) { return 0; }
+}
+
+
   function qqLeaseStart() {
     if (qqLeaseTimer) return;
+    if (qqBridgeBase()) return;   /* 服务端独占收发，页面不占租约 */
     qqLease(true);
     if (!XZ_SMOKE) qqLeaseTimer = setInterval(function () {
       if (document.hidden) return;
       qqLease(true);
       qqSyncBridge(false).catch(function () { });
-    }, 25000);
+    }, 20000);
     if (!qqPullTimer) {
       /* 每 60 秒跟常驻客户端对一次账，防止 WS 静默丢包 */
       if (!XZ_SMOKE) qqPullTimer = setInterval(function () {
@@ -11909,6 +11947,7 @@ var diary    = defaultDiary();
     try {
       var r = await fetch(base + 'status', { cache: 'no-store' });
       var d = await r.json();
+      qqServerOk = true;   /* 服务端应答了 → 收发归它 */
       line.textContent = d && d.connected
         ? ('服务器常驻：在线（存档 ' + (d.inboxCount || 0) + ' 条，' + (d.selfId || '?') + '）')
         : ('服务器常驻：离线' + (d && d.lastError ? ('（' + d.lastError + '）') : ''));
@@ -12701,6 +12740,12 @@ var diary    = defaultDiary();
     opts = opts || {};
     /* 同一条消息只处理一次：重连后 NapCat 可能重推，常驻客户端补收也可能撞上 */
     if (!opts.force && ev && ev.message_id && qqSeenHas(ev.message_id)) return;
+    /* 有常驻客户端时：收发全归服务端，页面只展示 + 手动发送 */
+    if (!opts.force && !opts.fromBridge && qqServerOk) {
+      try { if (isMaster) qqMirrorToChat(ev, qqTextOf(ev), qqImagesOf(ev)); } catch (e) { }
+      qqMarkSeen(ev.message_id);
+      return;
+    }
     /* 撤回过的当没看到（不回复、也不进上下文） */
     if (ev && ev.message_id && qq.recalled && qq.recalled[String(ev.message_id)]) { qqMarkSeen(ev.message_id); return; }
     var isGroup = ev.message_type === 'group';
@@ -14050,6 +14095,7 @@ async function exportDataChoice() {
     renderQqActivity();
     qqPullBridge(false).catch(function () { });
     setTimeout(function () { qqBridgeStatus(); qqLoginHealth(); qqLeaseStart(); qqSyncBridge(true); }, 1200);
+    setTimeout(function () { qqStickersSync().catch(function () { }); }, 6000);
     setTimeout(function () { memoryCompactLight().catch(function () { }); }, 4000);
     setTimeout(function () { diaryAuto().catch(function () { }); memeAutoLearn().catch(function () { }); }, 12000);
     setTimeout(function () { birthdayTick().catch(function () { }); }, 15000);
