@@ -964,8 +964,7 @@ def proactive_loop():
             pr = ((cfg.get("qq") or {}).get("proactive") or {})
             if not pr.get("on"):
                 continue
-            if time.time() < lease_until:
-                continue
+            # 收发全在服务端，不看页面租约
             master = int(cfg.get("masterUid") or 0)
             if not master:
                 continue
@@ -1250,6 +1249,10 @@ def is_recalled(mid):
 
 def maybe_reply(ev):
     # 撤回的消息当没看到
+    try:
+        note_stickers(ev, cfg_or_empty())
+    except Exception:
+        pass
     if ev.get("post_type") == "notice":
         nt = str(ev.get("notice_type") or "")
         if nt in ("friend_recall", "group_recall"):
@@ -1274,9 +1277,7 @@ def maybe_reply(ev):
     if not cfg or not cfg.get("enabled", True):
         print("[bridge] 跳过：没配置或关掉了", flush=True)
         return
-    if time.time() < lease_until:
-        print("[bridge] 跳过：页面在线（租约还剩 %ds）" % int(lease_until - time.time()), flush=True)
-        return
+    # 收发全在服务端：页面开着也照回（页面只负责展示/手动发送）
     uid = int(ev.get("user_id") or 0)
     if not uid or uid == int(ev.get("self_id") or 0):
         return
@@ -1315,12 +1316,66 @@ def maybe_reply(ev):
         threading.Thread(target=lambda: reply_now(ev, texts), daemon=True).start()
 
 
+STICKERS = os.path.join(DATA_DIR, "stickers.json")
+STICKER_SEEN = os.path.join(DATA_DIR, "stickerseen.json")
+
+
+def seg_stickers(ev):
+    """从一条消息里挑出表情包段：mface（动画表情）和 image"""
+    out = []
+    for seg in (ev.get("message") or []):
+        if not isinstance(seg, dict):
+            continue
+        t = seg.get("type")
+        d = seg.get("data") or {}
+        if t in ("mface", "marketface"):
+            eid = str(d.get("emoji_id") or d.get("emojiId") or "")
+            if eid:
+                out.append({"key": "mf" + eid, "face": {"id": eid, "summary": str(d.get("summary") or "")},
+                            "url": ""})
+        elif t == "image":
+            url = str(d.get("url") or "")
+            sub = int(d.get("sub_type") or 0)
+            summary = str(d.get("summary") or "")
+            if sub == 1 or "表情" in summary or d.get("emoji_id"):
+                out.append({"key": "img" + (d.get("file_unique") or url)[:40], "face": None, "url": url})
+    return out
+
+
+def note_stickers(ev, cfg):
+    """主人私聊里的表情：同一张出现 2~3 次就收进表情库（页面会来同步）"""
+    qq = cfg.get("qq") or {}
+    if qq.get("collectStickers") is False:
+        return
+    master = int(cfg.get("masterUid") or 0)
+    if not master or int(ev.get("user_id") or 0) != master or ev.get("message_type") == "group":
+        return
+    items = seg_stickers(ev)
+    if not items:
+        return
+    seen = load_json(STICKER_SEEN, {}) or {}
+    saved = load_json(STICKERS, []) or []
+    saved_keys = {s.get("key") for s in saved}
+    changed = False
+    for it in items:
+        k = it["key"]
+        seen[k] = int(seen.get(k) or 0) + 1
+        need = 3 if it.get("url") else 2
+        if seen[k] >= need and k not in saved_keys:
+            saved.append(it)
+            saved_keys.add(k)
+            changed = True
+            print("[bridge] 收录表情：%s" % k, flush=True)
+    save_json(STICKER_SEEN, seen)
+    if changed:
+        save_json(STICKERS, saved[-200:])
+
+
 def reply_now(ev, texts):
     cfg = cfg_or_empty()
     if not cfg or not cfg.get("enabled", True):
         return
-    if time.time() < lease_until:
-        return
+    # 收发全在服务端：不看页面是否在线
     # 页面已经回过这条（ack），或者本进程刚回过 → 别再答一次
     mid1 = ev.get("message_id")
     with reply_lock:
@@ -1418,7 +1473,6 @@ def reader_loop():
                 with lock:
                     append_line(INBOX, rec)
                     stats["messages"] += 1
-                    stats["lastMsgAt"] = int(time.time())
                 threading.Thread(target=maybe_reply, args=(ev,), daemon=True).start()
         except Exception as e:
             stats["connected"] = False
@@ -1511,6 +1565,8 @@ class Handler(BaseHTTPRequestHandler):
             out["configAt"] = cfg.get("at") or 0
             out["autoReply"] = bool(cfg.get("enabled", True))
             return self._json(out)
+        if u.path.startswith("/stickers"):
+            return self._json({"ok": True, "items": load_json(STICKERS, []) or []})
         if u.path.startswith("/config"):
             cfg = dict(cfg_or_empty())
             if cfg.get("model"):
